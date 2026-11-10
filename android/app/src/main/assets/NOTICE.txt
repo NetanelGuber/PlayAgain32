@@ -1,0 +1,17 @@
+PlayAgain32 is a modified, independent fork of Game Bridge by Braxten Chenay.
+Upstream: https://github.com/braxten509/arm32-bridge
+Base revision: 83438366eaf3d6728b1bd221feb745f7db50f032
+
+Original copyright notices are retained in the corresponding source.
+Game Bridge source is GPL-2.0-or-later. The built runtime includes patched
+Unicorn, whose applicable GPLv2 terms and notices remain in the source tree.
+See LICENSE-GPL-2.0.txt and UNICORN-COPYING.txt.
+
+PlayAgain32 changes include an offline document-import/library flow,
+validation and safe installation behavior, native ELF metadata validation,
+conservative frame timing, and portable Windows Android build tooling.
+
+AndroidX and other linked dependencies retain their original licenses.
+No games or game assets are included. This app is not affiliated with any
+game developer or store. This alpha is a development build, not a verified
+universal compatibility release.

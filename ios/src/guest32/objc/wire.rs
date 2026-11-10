@@ -1,0 +1,521 @@
+//! Connects the Objective-C bridge to the translator and the 32-bit runner:
+//! guest memory and guest calls ([`Translator`]), one handler for every
+//! Objective-C runtime function, the data imports the game's classes and
+//! constants bind to, and setting up the game's classes after loading.
+
+use super::bridge::{dispatch_from_host, install, is_host_object, run_loads as run_guest_loads, Bridge, GuestSide, SendKind, Special};
+use super::functions::{call_function, functions, Ctx, HOST_FUNCTIONS};
+use super::{exceptions, mirror};
+use arm32_bridge::ios32::Program;
+use arm32_bridge::runtime::{self, ArgSource, Args, GuestCpu, Ret, Uc};
+use guest32_image::{read_objc, ImageMemory, ObjcMetadata32, ObjcSections};
+use std::cell::{Cell, RefCell};
+use std::sync::{Mutex, OnceLock};
+
+static BRIDGE: OnceLock<Mutex<Bridge>> = OnceLock::new();
+static METADATA: OnceLock<ObjcMetadata32> = OnceLock::new();
+
+thread_local! {
+    /// The engine of the handler running on this thread, for nested guest calls.
+    static CURRENT_UC: Cell<*mut Uc> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Guest memory and guest code through the translator.
+pub struct Translator;
+
+impl GuestSide for Translator {
+    fn read(&self, addr: u32, len: u32) -> Vec<u8> {
+        runtime::mem().bytes(addr, len as usize).to_vec()
+    }
+    fn read_u32(&self, addr: u32) -> u32 {
+        runtime::mem().read_u32(addr)
+    }
+    fn write(&self, addr: u32, data: &[u8]) {
+        runtime::mem().write_bytes(addr, data)
+    }
+    fn alloc(&self, size: u32) -> u32 {
+        super::super::alloc(size.max(1))
+    }
+    fn free(&self, addr: u32) {
+        super::super::free(addr)
+    }
+    fn alloc_permanent(&self, size: u32) -> u32 {
+        super::super::alloc_permanent(size.max(1), 8)
+    }
+    fn host_address(&self, addr: u32) -> usize {
+        runtime::mem().host(addr) as usize
+    }
+    fn guest_address(&self, host: usize) -> Option<u32> {
+        let memory = runtime::mem();
+        let base = memory.host(0) as usize;
+        (host >= base && host - base < 1 << 32).then(|| memory.guest(host as *const u8))
+    }
+    fn function_address(&self, name: &str) -> u32 {
+        runtime::stub_for(name)
+    }
+    /// A game exception escaping the call stops at it (see
+    /// exceptions::Barrier) and goes on as a raise of the host code that
+    /// made the call: the bridge throws it again in the game code that
+    /// called the host (64-bit games' exceptions unwind host frames as they are).
+    fn call(&self, imp: u32, words: &[u32]) -> Result<u64, String> {
+        let _gil = runtime::hold_gil();
+        let current = CURRENT_UC.with(|c| c.get());
+        let uc = if current.is_null() { runtime::engine() } else { unsafe { &mut *current } };
+        let barrier = exceptions::Barrier::push(uc);
+        let result = runtime::call_guest(uc, imp, words);
+        let Some(escaped) = barrier.pop() else { return result };
+        let bridge = bridge().ok_or("a game exception escaped before the Objective-C bridge was set up")?;
+        let c = Ctx { bridge, g: &Translator };
+        let object = exceptions::take_escaped(uc, &c, escaped, crate::fw::exception::answering_game())?;
+        let host = bridge.lock().unwrap_or_else(|e| e.into_inner()).host_object_for(&Translator, object)?;
+        crate::fw::exception::raise(host);
+        Ok(0)
+    }
+    fn without_guest_lock(&self, wait: &mut dyn FnMut()) {
+        runtime::without_gil(wait)
+    }
+    fn nested_calls_left(&self) -> u32 {
+        let _gil = runtime::hold_gil();
+        let current = CURRENT_UC.with(|c| c.get());
+        let uc = if current.is_null() { runtime::engine() } else { unsafe { &mut *current } };
+        runtime::MAX_CALL_DEPTH.saturating_sub(runtime::call_depth(uc))
+    }
+}
+
+fn bridge() -> Option<&'static Mutex<Bridge>> {
+    BRIDGE.get()
+}
+
+/// The runner's bridge for tests: one with no game classes.
+#[cfg(test)]
+pub fn test_bridge() -> &'static Mutex<Bridge> {
+    BRIDGE.get_or_init(|| Mutex::new(Bridge::new(&ObjcMetadata32::default()).unwrap()))
+}
+
+/// Runs `f` with this handler's engine remembered for nested guest calls.
+fn with_engine<R>(uc: &mut Uc, f: impl FnOnce() -> R) -> R {
+    let previous = CURRENT_UC.with(|c| c.replace(uc as *mut Uc));
+    let result = f();
+    CURRENT_UC.with(|c| c.set(previous));
+    result
+}
+
+/// The handler behind every Objective-C runtime function but the message sends.
+fn objc_handler(uc: &mut Uc, args: &mut Args) -> Ret {
+    let name = uc.get_data().current_call;
+    handle(uc, args, false, |c, words| call_function(c, name, words))
+}
+
+/// The message sends, each straight to its kind (no lookup by name).
+fn send_normal(uc: &mut Uc, args: &mut Args) -> Ret {
+    handle(uc, args, true, |c, words| super::functions::send(c, words, SendKind::Normal))
+}
+
+fn send_stret(uc: &mut Uc, args: &mut Args) -> Ret {
+    handle(uc, args, true, |c, words| super::functions::send(c, words, SendKind::Stret))
+}
+
+fn send_super(uc: &mut Uc, args: &mut Args) -> Ret {
+    handle(uc, args, true, |c, words| super::functions::send(c, words, SendKind::Super2))
+}
+
+fn send_super_stret(uc: &mut Uc, args: &mut Args) -> Ret {
+    handle(uc, args, true, |c, words| super::functions::send(c, words, SendKind::Super2Stret))
+}
+
+/// A call's argument words, read from the engine as they are first asked
+/// for; the first 24 kept in place (a message rarely has more).
+struct ArgWords<'a> {
+    args: &'a mut Args,
+    got: [u32; 24],
+    len: usize,
+    more: Vec<u32>,
+}
+
+impl ArgWords<'_> {
+    fn word(&mut self, i: u32) -> u32 {
+        let i = i as usize;
+        while self.len <= i {
+            let value = self.args.u32();
+            if self.len < self.got.len() {
+                self.got[self.len] = value;
+            } else {
+                self.more.push(value);
+            }
+            self.len += 1;
+        }
+        if i < self.got.len() { self.got[i] } else { self.more[i - self.got.len()] }
+    }
+}
+
+/// Runs an Objective-C runtime function: `is_send` for the message sends,
+/// which may jump straight into a game method.
+fn handle(uc: &mut Uc, args: &mut Args, is_send: bool, call: impl FnOnce(&Ctx, &dyn Fn(u32) -> u32) -> Result<u64, String>) -> Ret {
+    let name = uc.get_data().current_call;
+    let Some(bridge) = bridge() else {
+        runtime::stop_with_fault(uc, format!("{name} called before the Objective-C bridge was set up"));
+        return Ret::Void;
+    };
+    let read = RefCell::new(ArgWords { args, got: [0; 24], len: 0, more: Vec::new() });
+    let words = |i: u32| read.borrow_mut().word(i);
+    // A message to a plain game method jumps into it from here (see
+    // allow_jump): no nested call, so it gets the caller's stack words too.
+    super::bridge::allow_jump(is_send);
+    // An exception raised meanwhile (by host code, or a game exception that
+    // escaped a nested game call) is thrown here, in the game code that called.
+    let (result, raised) = crate::fw::exception::catching(|| with_engine(uc, || call(&Ctx { bridge, g: &Translator }, &words)));
+    super::bridge::allow_jump(false);
+    let jump = super::bridge::take_jump();
+    let raised = match raised.map(|host| bridge.lock().unwrap_or_else(|e| e.into_inner()).guest_object(&Translator, host)) {
+        Some(Err(error)) => {
+            runtime::stop_with_fault(uc, format!("{name}: an exception for the game: {error}"));
+            return Ret::Void;
+        }
+        Some(Ok(exception)) => Some(exception),
+        None => None,
+    };
+    if let Some(exception) = super::bridge::take_pending_throw().or(raised) {
+        return with_context(uc, |uc, c| exceptions::throw(uc, c, exception));
+    }
+    match result {
+        Ok(_) if jump.is_some() => {
+            let (imp, registers) = jump.unwrap();
+            for (i, word) in registers.into_iter().enumerate() {
+                uc.set_reg(i, word);
+            }
+            // lr and sp stay the caller's: the method returns straight to it.
+            uc.get_data_mut().jump_to = Some(imp);
+            Ret::Jumped
+        }
+        Ok(value) => Ret::U64(value),
+        Err(error) => {
+            runtime::stop_with_fault(uc, format!("{name}: {error}"));
+            Ret::Void
+        }
+    }
+}
+
+/// UIApplicationMain(argc, argv, principalClassName, delegateClassName):
+/// the host's run loop, with the class names as host strings.
+fn ui_application_main(uc: &mut Uc, args: &mut Args) -> Ret {
+    let (argc, argv, principal, delegate) = (args.u32(), args.u32(), args.u32(), args.u32());
+    let Some(bridge) = bridge() else {
+        runtime::stop_with_fault(uc, "UIApplicationMain before the Objective-C bridge was set up".into());
+        return Ret::Void;
+    };
+    super::game_fixes::install(uc, bridge);
+    let host_strings = |guest: u32| -> Result<usize, String> {
+        bridge.lock().unwrap_or_else(|e| e.into_inner()).host_object_for(&Translator, guest)
+    };
+    let (principal, delegate) = match (host_strings(principal), host_strings(delegate)) {
+        (Ok(p), Ok(d)) => (p, d),
+        (Err(e), _) | (_, Err(e)) => {
+            runtime::stop_with_fault(uc, format!("UIApplicationMain: {e}"));
+            return Ret::Void;
+        }
+    };
+    let memory = runtime::mem();
+    let host_argv: Vec<usize> =
+        (0..argc).map(|i| memory.host(memory.read_u32(argv + 4 * i)) as usize).chain([0]).collect();
+    let Some((main, _)) = crate::symbols::lookup("_UIApplicationMain") else {
+        runtime::stop_with_fault(uc, "the host layer has no UIApplicationMain".into());
+        return Ret::Void;
+    };
+    let mut call = super::convert::HostArgs::default();
+    call.x[..4].copy_from_slice(&[u64::from(argc), host_argv.as_ptr() as u64, principal as u64, delegate as u64]);
+    crate::log!("32-bit UIApplicationMain: handing over to the host run loop");
+    let result = with_engine(uc, || mirror::call_host(main, &call));
+    Ret::U32(result.x[0] as u32)
+}
+
+/// Runs an engine-level handler with a bridge context (nested guest calls
+/// from the bridge use this handler's engine).
+fn with_context(uc: &mut Uc, work: impl FnOnce(&mut Uc, &Ctx) -> Ret) -> Ret {
+    let Some(bridge) = bridge() else {
+        let name = uc.get_data().current_call;
+        runtime::stop_with_fault(uc, format!("{name} called before the Objective-C bridge was set up"));
+        return Ret::Void;
+    };
+    let engine = uc as *mut Uc;
+    with_engine(uc, || work(unsafe { &mut *engine }, &Ctx { bridge, g: &Translator }))
+}
+
+fn exception_throw(uc: &mut Uc, args: &mut Args) -> Ret {
+    let object = args.u32();
+    with_context(uc, |uc, c| exceptions::throw(uc, c, object))
+}
+
+fn exception_do_catch(uc: &mut Uc, args: &mut Args) -> Ret {
+    let (catch_type, thrown_type, adjusted) = (args.u32(), args.u32(), args.u32());
+    with_context(uc, |_, c| Ret::U32(u32::from(exceptions::do_catch(c, catch_type, thrown_type, adjusted))))
+}
+
+fn exception_terminate(uc: &mut Uc, _: &mut Args) -> Ret {
+    with_context(uc, exceptions::terminate)
+}
+
+/// Registers the Objective-C runtime functions (before loading).
+pub fn register() {
+    for name in functions().iter().map(|f| f.0).chain(HOST_FUNCTIONS.iter().map(|f| f.0)) {
+        let handler: fn(&mut Uc, &mut Args) -> Ret = match name {
+            "objc_msgSend" => send_normal,
+            "objc_msgSend_stret" => send_stret,
+            "objc_msgSendSuper2" => send_super,
+            "objc_msgSendSuper2_stret" => send_super_stret,
+            _ => objc_handler,
+        };
+        super::super::function(name, handler);
+    }
+    super::super::function("UIApplicationMain", ui_application_main);
+    super::super::function(exceptions::THROW, exception_throw);
+    super::super::function(exceptions::ANSWER_FALSE, |_, _| Ret::U32(0));
+    super::super::function(exceptions::DO_CATCH, exception_do_catch);
+    super::super::function(exceptions::TERMINATE, exception_terminate);
+    super::super::function(super::game_fixes::RENDER_LOOP, |uc, args| {
+        let renderer = args.u32();
+        with_context(uc, |uc, c| {
+            if let Err(error) = super::game_fixes::render_loop(c, renderer) {
+                runtime::stop_with_fault(uc, format!("SpellCraft render loop: {error}"));
+            }
+            Ret::Void
+        })
+    });
+    super::super::function(super::game_fixes::NODE_TRANSFORM, |uc, args| {
+        let (animation, node, frame, out) = (args.u32(), args.u32(), args.u32(), args.u32());
+        if let Err(error) = super::game_fixes::node_transform(uc, animation, node, frame, out) {
+            runtime::stop_with_fault(uc, format!("SpellCraft nodeTransform: {error}"));
+        }
+        Ret::Void
+    });
+    super::super::function(exceptions::BARRIER, |_, args| {
+        let (_version, actions, _class_low, _class_high, exception, context) = (args.u32(), args.u32(), args.u32(), args.u32(), args.u32(), args.u32());
+        Ret::U32(exceptions::barrier_personality(actions, exception, context))
+    });
+    super::super::data("objc_ehtype_vtable", exceptions::vtable);
+    super::super::data("OBJC_EHTYPE_id", exceptions::id_type);
+    super::super::data("OBJC_EHTYPE_$_NSException", || {
+        exceptions::framework_type("NSException", with_bridge(|b| b.framework_class(&Translator, "NSException").0))
+    });
+    super::super::data("_dispatch_main_q", super::dispatch::main_queue);
+    super::super::data("_dispatch_source_type_timer", super::dispatch::timer_type);
+}
+
+/// Reads the program's Objective-C metadata and registers the data its
+/// binds need (framework classes, block and constant-string classes).
+/// Runs after `prepare`, before `load`.
+pub fn register_program(program: &Program) -> Result<(), String> {
+    if program.plan.slide != 0 {
+        return Err(format!(
+            "this 32-bit program loads at a slide ({:#x}); its Objective-C metadata is only read unslid so far",
+            program.plan.slide
+        ));
+    }
+    let memory = ImageMemory::new(&program.image, &program.file).map_err(|e| e.to_string())?;
+    let md = read_objc(&memory, &ObjcSections::from_image(&program.image)).map_err(|e| format!("Objective-C metadata: {e}"))?;
+    let bridge = Bridge::new(&md)?;
+    let _ = METADATA.set(md);
+    if BRIDGE.set(Mutex::new(bridge)).is_err() {
+        return Err("the Objective-C bridge was already set up".into());
+    }
+    super::super::fw::set_object_bridge(&FwObjects);
+    let mut names: Vec<&str> = program.image.binds.iter().map(|b| b.symbol.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    for symbol in names {
+        let c_name = arm32_bridge::ios32::c_name(symbol).to_string();
+        if let Some(class) = symbol.strip_prefix("_OBJC_CLASS_$_") {
+            let class = class.to_string();
+            super::super::data(&c_name, move || with_bridge(|b| b.framework_class(&Translator, &class).0));
+        } else if let Some(class) = symbol.strip_prefix("_OBJC_METACLASS_$_") {
+            let class = class.to_string();
+            super::super::data(&c_name, move || with_bridge(|b| b.framework_class(&Translator, &class).1));
+        }
+    }
+    // String literals' isa: the guest copy of NSString, so messages, isa
+    // checks and class names work; a literal not seen before gets a host
+    // string with its text.
+    super::super::data("__CFConstantStringClassReference", || {
+        with_bridge(|b| {
+            let class = b.framework_class(&Translator, "NSString").0;
+            b.set_special(class, Special::ConstantString);
+            class
+        })
+    });
+    replace_block_classes()?;
+    // Object constants (NSString *const UIApplicationDidBecomeActiveNotification,
+    // NSLocalizedDescriptionKey, ...): when the host has the variable and it
+    // holds a host object, the guest variable holds that object's proxy.
+    let mut names: Vec<&str> = program.image.binds.iter().map(|b| b.symbol.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    for symbol in names {
+        let c_name = arm32_bridge::ios32::c_name(symbol).to_string();
+        if symbol.starts_with("_OBJC_") || arm32_bridge::ios32::provides_data(&c_name) {
+            continue;
+        }
+        let Some(object) = host_object_constant(symbol) else { continue };
+        super::super::data(&c_name, move || {
+            let variable = super::super::alloc_permanent(4, 4);
+            let guest = with_bridge(|b| b.guest_object(&Translator, object)).unwrap_or(0);
+            runtime::mem().write_u32(variable, guest);
+            variable
+        });
+    }
+    // The empty method cache: read, never written.
+    for symbol in ["_objc_empty_cache", "_objc_empty_vtable"] {
+        super::super::data_words(symbol, vec![0; 4]);
+    }
+    Ok(())
+}
+
+/// The block classes the bridge knows (by isa), replacing libSystem's
+/// placeholders. Data addresses are kept once made, so this must come
+/// before any library constructor or bind reaches them: refused after.
+pub fn replace_block_classes() -> Result<(), String> {
+    const CLASSES: [(&str, Special); 3] = [
+        ("_NSConcreteStackBlock", Special::StackBlock),
+        ("_NSConcreteMallocBlock", Special::MallocBlock),
+        ("_NSConcreteGlobalBlock", Special::GlobalBlock),
+    ];
+    if let Some((symbol, _)) = CLASSES.iter().find(|(symbol, _)| arm32_bridge::ios32::data_made(symbol)) {
+        return Err(format!("{symbol} was bound before the Objective-C bridge replaced libSystem's block class"));
+    }
+    for (symbol, kind) in CLASSES {
+        super::super::data(symbol, move || {
+            let isa = super::super::alloc_permanent(64, 8);
+            with_bridge(|b| b.set_special(isa, kind));
+            isa
+        });
+    }
+    Ok(())
+}
+
+/// The host object a host data symbol holds, if it is a variable holding an
+/// object (checked as a plausible pointer before its class is read).
+fn host_object_constant(symbol: &str) -> Option<usize> {
+    let (address, kind) = crate::symbols::lookup(symbol)?;
+    if kind != crate::symbols::Kind::Data || address == 0 {
+        return None;
+    }
+    let value = unsafe { *(address as *const usize) };
+    is_host_object(value).then_some(value)
+}
+
+/// The C framework layer's object table is the bridge's pair table, so a
+/// CGImage from a C call and from -[UIImage CGImage] is one guest object.
+struct FwObjects;
+
+impl super::super::fw::ObjectBridge for FwObjects {
+    fn to_host(&self, guest: u32) -> usize {
+        with_bridge(|b| b.host_object_for(&Translator, guest)).unwrap_or(0)
+    }
+    fn to_guest(&self, host: usize) -> u32 {
+        with_bridge(|b| b.guest_object(&Translator, host)).unwrap_or(0)
+    }
+}
+
+fn with_bridge<R>(f: impl FnOnce(&mut Bridge) -> R) -> R {
+    f(&mut bridge().expect("bridge set up in register_program").lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// A game method's encoding as the host passes its values (the bridge turns
+/// a float into a CGFloat-sized double), for key-value coding.
+fn game_method_types(class: crate::objc::runtime::Class, sel: crate::objc::runtime::Sel) -> Option<String> {
+    let (name, meta, sel_name) = {
+        let rt = crate::objc::runtime::lock();
+        (rt.class_name(class), rt.classes.get(&class)?.meta, rt.sel_name(sel))
+    };
+    let b = bridge()?.lock().unwrap_or_else(|e| e.into_inner());
+    let guest = b.classes.class_named(&name)?;
+    let address = if meta { guest.partner } else { guest.address };
+    match b.classes.lookup(address, &sel_name) {
+        super::classes::Lookup::Guest(m) => Some(crate::fw::object::float_as_double(&m.types)),
+        _ => None,
+    }
+}
+
+/// The field `name` of a game object, in the game's memory (its class's
+/// 32-bit layout), for key-value coding.
+fn game_field(object: crate::objc::runtime::Id, name: &str) -> Option<crate::fw::object::Field> {
+    let class_name = {
+        let rt = crate::objc::runtime::lock();
+        rt.class_name(rt.class_of(object))
+    };
+    let mut b = bridge()?.lock().unwrap_or_else(|e| e.into_inner());
+    b.classes.class_named(&class_name)?;
+    let guest = b.guest_object(&Translator, object).ok()?;
+    let word = |at: u32| u32::from_le_bytes(Translator.read(at, 4).try_into().unwrap());
+    let mut class = word(guest);
+    for _ in 0..256 {
+        let k = b.classes.class(class)?;
+        if let Some(ivar) = k.ivars.iter().find(|i| i.name == name) {
+            // The offset variable holds the offset the game's code uses.
+            let offset = if ivar.offset_address != 0 { word(ivar.offset_address) } else { ivar.offset };
+            return Some(crate::fw::object::Field { at: Translator.host_address(guest + offset), kind: ivar.type_encoding.clone(), guest: true });
+        }
+        match k.superclass {
+            super::classes::Super::Game(parent) => class = parent,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Defines the host mirrors of the game's classes and makes selector
+/// references unique. Runs after `load`.
+pub fn install_program() -> Result<(), String> {
+    // Translated code jumps straight to remembered game methods
+    // (dynarec::send_cache; the stand-ins exist once runtime::init ran).
+    // Test switch IOS_SEND_LANE=0 turns it off.
+    if std::env::var("IOS_SEND_LANE").map_or(true, |v| v != "0") {
+        let lane = arm32_bridge::runtime::send_cache("objc_msgSend");
+        with_bridge(|b| super::bridge::use_lane(b, lane));
+    } else {
+        crate::log!("objc_msgSend: no lane (IOS_SEND_LANE=0)");
+    }
+    let (bridge, md) = (bridge().ok_or("no Objective-C bridge")?, METADATA.get().ok_or("no metadata")?);
+    install(bridge, &Translator, md)?;
+    super::bridge::set_block_owner(&Translator);
+    // Game objects whose last reference goes are sent -dealloc (fw/counted.rs).
+    super::bridge::set_dealloc_bridge(bridge, &Translator);
+    super::forward::set_invocation_hooks(bridge, &Translator);
+    crate::fw::object::set_extra_method_types(game_method_types);
+    crate::fw::object::set_extra_fields(game_field);
+    crate::fw::system::set_guest_memory(crate::fw::system::GuestMemory {
+        owns: |host| Translator.guest_address(host).is_some(),
+        object_to_host: |guest| with_bridge(|b| b.host_object_for(&Translator, guest)).unwrap_or(0),
+        object_to_guest: |host| with_bridge(|b| b.guest_object(&Translator, host)).unwrap_or(0),
+    });
+    // Guest copies kept for a host object go when it is finished with.
+    crate::objc::runtime::on_object_finished(|host| with_bridge(|b| b.release_host_copies(&Translator, host)));
+    mirror::set_dispatch(Box::new(|frame| {
+        let Some(bridge) = BRIDGE.get() else { return };
+        if let Err(error) = dispatch_from_host(bridge, &Translator, frame) {
+            // Which host call into the game failed, for the log (blocks have no selector).
+            let name = if super::bridge::wrapper_guest(frame.x[0] as usize).is_some() || frame.x[1] == 0 {
+                "a block".to_string()
+            } else {
+                unsafe { crate::objc::runtime::cstr(frame.x[1] as usize) }
+            };
+            let error = format!("{error} (host sent {name} to {:#x})", frame.x[0]);
+            crate::log!("32-bit Objective-C: {error}");
+            let _gil = runtime::hold_gil();
+            let current = CURRENT_UC.with(|c| c.get());
+            let uc = if current.is_null() { runtime::engine() } else { unsafe { &mut *current } };
+            runtime::stop_with_fault(uc, error);
+        }
+    }));
+    crate::log!(
+        "32-bit Objective-C: {} game classes, {} categories, {} selector references",
+        md.classes.len(),
+        md.categories.len(),
+        md.selector_refs.len()
+    );
+    Ok(())
+}
+
+/// Runs the game's +load methods (after binding, before its C++ initializers).
+pub fn run_loads() -> Result<(), String> {
+    let (bridge, md) = (bridge().ok_or("no Objective-C bridge")?, METADATA.get().ok_or("no metadata")?);
+    run_guest_loads(bridge, &Translator, md)
+}

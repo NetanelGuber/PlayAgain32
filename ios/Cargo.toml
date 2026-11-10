@@ -1,0 +1,47 @@
+[package]
+name = "gamebridge-ios"
+version = "0.1.0"
+edition = "2021"
+description = "Game Bridge's iPhone layer: runs the 64-bit ARM code of iPhone games on ARM64 Linux and Android"
+license = "GPL-2.0-or-later"
+
+[lib]
+name = "gamebridge_ios"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "ios-run"
+path = "src/main.rs"
+
+[dependencies]
+# 32-bit (armv7) games run on the translator; its loader reads their Mach-O files.
+arm32-bridge = { path = ".." }
+guest32-image = { path = "guest32-image" }
+aes = "0.8"
+blowfish = "0.9"
+cast5 = "0.11"
+cipher = "0.4"
+des = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+dlmalloc = "0.2.14"
+libc = "0.2.190"
+miniz_oxide = "0.8"
+libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
+regex = "1.13.1"
+# A fast hash for the bridge's lookup tables (objc/runtime.rs, guest32/objc).
+rustc-hash = "2.1"
+# Font files: glyph outlines and measures for NSString drawing.
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm", "aac", "alac", "isomp4"] }
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni-sys = "0.3"
+
+[dev-dependencies]
+# Tests drive the phone app's way in (java_text.rs) with a stand-in JNI table.
+jni-sys = "0.3"
+# Checks that the bridge's memory comes from mimalloc (src/lib.rs).
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }

@@ -1,0 +1,26 @@
+name: Set up Android source build
+description: Pinned SDK/NDK and Windows GNU Rust toolchain for PlayAgain32
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+      with:
+        distribution: temurin
+        java-version: '21'
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
+    - name: Install build prerequisites
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        & rustup toolchain install 1.99.1-x86_64-pc-windows-gnu --profile minimal --target aarch64-linux-android
+        if ($LASTEXITCODE) { throw 'Rust installation failed.' }
+        & python -m pip install --disable-pip-version-check --target .build/python-tools libclang==18.1.1
+        if ($LASTEXITCODE) { throw 'libclang installation failed.' }
+        $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+        1..100 | ForEach-Object { 'y' } | & $sdkmanager --licenses > $null
+        if ($LASTEXITCODE) { throw 'SDK license acceptance failed.' }
+        & $sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
+        if ($LASTEXITCODE) { throw 'Android SDK installation failed.' }
+        "NDK=$(Join-Path $env:ANDROID_HOME 'ndk/28.2.13676358')" >> $env:GITHUB_ENV

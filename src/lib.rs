@@ -1,0 +1,35 @@
+//! arm32-bridge: runs 32-bit ARM Android library code inside a 64-bit
+//! process. Built as a command-line tool (src/main.rs) for testing, and as a
+//! drop-in replacement for a game's native library inside its APK (app.rs).
+
+/// Every allocation of the bridge's own code goes through mimalloc: the
+/// phone's malloc (GrapheneOS's hardened one) made each small one slow enough
+/// that SpellCraft stalled ~100 ms during its message bursts.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+pub mod dynarec;
+pub mod elf;
+pub mod imports;
+pub mod ios32;
+pub mod jni_names;
+pub mod log;
+pub mod mem;
+pub mod offline;
+pub mod gameswf_blend;
+pub mod gameswf_menus;
+pub mod monster_life_store;
+pub mod rtk_textures;
+pub mod rtk_zoom;
+pub mod runtime;
+pub mod texture_pack;
+pub mod wraps;
+
+#[cfg(target_os = "android")]
+pub mod app;
+#[cfg(target_os = "android")]
+pub mod natives;
+#[cfg(target_os = "android")]
+pub mod perf_hint;
+#[cfg(target_os = "android")]
+pub mod sound_preload;

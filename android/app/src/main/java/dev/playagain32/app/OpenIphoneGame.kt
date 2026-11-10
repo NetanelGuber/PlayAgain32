@@ -1,0 +1,28 @@
+package dev.playagain32.app
+
+import android.app.Activity
+import android.os.Bundle
+import android.os.Environment
+import android.widget.Toast
+import java.io.File
+
+/**
+ * Opens an iPhone game for its own app (IphoneApps): the app hands over the game's folder. It is
+ * the one part of PlayAgain32 other apps may open, so it only opens a folder on the phone's
+ * shared storage that holds an iPhone game; the game screen itself stays private.
+ */
+class OpenIphoneGame : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // An app made before its game moved into the PlayAgain32 folder still has the old folder.
+        val folder = intent.getStringExtra("app")?.let { Games.current(this, File(it)) }?.canonicalFile
+        val storage = Environment.getExternalStorageDirectory().canonicalFile
+        when {
+            folder == null || !folder.path.startsWith(storage.path + "/") || !folder.name.endsWith(".app") -> {}
+            !File(folder, "Info.plist").isFile ->
+                Toast.makeText(this, "This game's folder isn't on the phone any more.", Toast.LENGTH_LONG).show()
+            else -> startActivity(IphoneGames.intent(this, folder))
+        }
+        finish()
+    }
+}

@@ -1,0 +1,82 @@
+name: Draft signed alpha release
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    environment: release
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-android
+      - name: Build and test source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/build-android.ps1 -RustToolchain 1.99.1-x86_64-pc-windows-gnu -NativeOnly
+          ./tools/test.ps1 -RustToolchain 1.99.1-x86_64-pc-windows-gnu
+      - name: Sign release APK
+        shell: pwsh
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PLAYAGAIN32_KEYSTORE_BASE64 }}
+          PLAYAGAIN32_KEY_PASSWORD: ${{ secrets.PLAYAGAIN32_KEY_PASSWORD }}
+          PLAYAGAIN32_KEY_ALIAS: ${{ secrets.PLAYAGAIN32_KEY_ALIAS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:KEYSTORE_BASE64 -or !$env:PLAYAGAIN32_KEY_PASSWORD -or !$env:PLAYAGAIN32_KEY_ALIAS) {
+            throw 'Configure all three release signing secrets before running this workflow.'
+          }
+          $key = Join-Path $env:RUNNER_TEMP 'playagain32-release.jks'
+          try {
+            [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+            $env:PLAYAGAIN32_KEYSTORE = $key
+            Push-Location android
+            try {
+              ./gradlew.bat --no-daemon assembleRelease
+              if ($LASTEXITCODE) { throw 'Signed release build failed.' }
+            } finally { Pop-Location }
+          } finally {
+            if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Force }
+          }
+      - name: Package corresponding source and verified APK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $config = Get-Content android/app/build.gradle.kts -Raw
+          $version = [regex]::Match($config, 'versionName = "([0-9]+\.[0-9]+\.[0-9]+-alpha)"').Groups[1].Value
+          if (!$version) { throw 'Expected an alpha version in app/build.gradle.kts.' }
+          $buildTools = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0'
+          $apk = 'android/app/build/outputs/apk/release/app-release.apk'
+          & (Join-Path $buildTools 'apksigner.bat') verify --verbose --print-certs $apk
+          if ($LASTEXITCODE) { throw 'APK signature verification failed.' }
+          & (Join-Path $buildTools 'zipalign.exe') -c -P 16 4 $apk
+          if ($LASTEXITCODE) { throw 'APK alignment verification failed.' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $apk "dist/PlayAgain32-$version.apk"
+          & git archive --format=zip --output="dist/PlayAgain32-$version-source.zip" HEAD
+          if ($LASTEXITCODE) { throw 'Source archive failed.' }
+          Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Create draft prerelease for review
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $files = Get-ChildItem dist -File | Select-Object -ExpandProperty FullName
+          # Creating the ref first refuses an existing tag, even without a release.
+          & gh api --method POST "repos/$env:GH_REPO/git/refs" -f "ref=refs/tags/v$env:RELEASE_VERSION" -f "sha=$env:GITHUB_SHA" --silent
+          if ($LASTEXITCODE) { throw 'Release tag already exists or could not be created; nothing was overwritten.' }
+          & gh release create "v$env:RELEASE_VERSION" @files --verify-tag --draft --prerelease --title "PlayAgain32 $env:RELEASE_VERSION" --notes-file docs/ALPHA-NOTES.md
+          if ($LASTEXITCODE) { throw 'Draft release creation failed.' }

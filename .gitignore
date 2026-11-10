@@ -1,0 +1,44 @@
+/target
+/dist
+/.build
+/tests/guest/build
+/android/.gradle
+/android/.kotlin
+/android/build
+/android/app/build
+/android/local.properties
+# Native output is rebuilt from source; only license assets are committed.
+/android/app/src/main/jniLibs
+/android/app/src/main/assets/*
+!/android/app/src/main/assets/LICENSE-GPL-2.0.txt
+!/android/app/src/main/assets/NOTICE.txt
+!/android/app/src/main/assets/UNICORN-COPYING.txt
+# Public builds (tools/build-app.sh --public).
+/android/GameBridge-*.apk
+/android/PlayAgain32-*.apk
+# Crush's chat database for this folder.
+/.crush
+# qemu crash dumps from PC test runs.
+*.core
+
+# Local configuration, caches and signing material must never be published.
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.key
+*.pem
+*.log
+*.apk
+*.obb
+*.apks
+*.apkm
+*.xapk

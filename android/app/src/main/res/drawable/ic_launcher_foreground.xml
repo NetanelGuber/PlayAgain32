@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Padding keeps the generated replay/gamepad mark inside adaptive-icon masks. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="12dp"
+    android:insetRight="12dp"
+    android:insetTop="12dp"
+    android:insetBottom="12dp">
+    <bitmap android:src="@drawable/playagain32_mark" android:gravity="fill" />
+</inset>

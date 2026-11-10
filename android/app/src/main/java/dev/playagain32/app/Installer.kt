@@ -1,0 +1,208 @@
+package dev.playagain32.app
+
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.IntentSender
+import android.content.pm.PackageInstaller
+import android.os.Build
+import android.os.Environment
+import androidx.core.content.ContextCompat
+import java.io.File
+import java.security.DigestInputStream
+import java.security.MessageDigest
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
+/** How an install ended. */
+sealed class InstallResult {
+    object Done : InstallResult()
+
+    /** Android refuses games made for older versions than `sdk`. */
+    class NeedsTarget(val sdk: Int) : InstallResult()
+
+    /** Another copy of the game, signed by someone else, is installed. */
+    object OtherCopy : InstallResult()
+
+    /** Android's "conflict": a copy signed by someone else, or a clash with another app (`message` says which). */
+    class Conflict(val message: String?) : InstallResult()
+
+    class Failed(val reason: String) : InstallResult()
+}
+
+/**
+ * Installs and removes games through Android's own installer. Android shows its confirmation for
+ * each install and removal; the user has turned on "Install unknown apps" for PlayAgain32 in the
+ * setup screen, which also lets it copy game data into Android/obb.
+ */
+class Installer(context: Context) {
+    private val context = context.applicationContext
+
+    /** Installs one APK, or a bundle's pieces together. */
+    fun install(apks: List<File>): InstallResult {
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        // Every install stays reviewable in Android's confirmation screen.
+        params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+        val id = installer.createSession(params)
+        val answer = installer.openSession(id).use { session ->
+            try {
+                // All pieces in one session: Android installs them as one app or not at all.
+                apks.forEachIndexed { index, apk ->
+                    apk.inputStream().use { input ->
+                        session.openWrite("piece-$index.apk", 0, apk.length()).use { output ->
+                            input.copyTo(output)
+                            session.fsync(output)
+                        }
+                    }
+                }
+            } catch (failure: Exception) {
+                session.abandon()
+                return InstallResult.Failed("Couldn't hand the game to Android: ${failure.message}")
+            }
+            val answer = try {
+                waitForAnswer("install-$id") { sender -> session.commit(sender) }
+            } catch (failure: Exception) {
+                session.abandon()
+                return InstallResult.Failed("Android didn't take the game: ${failure.message}")
+            }
+            // Cancelled here, so a forgotten confirmation screen can't still install it later.
+            if (answer.status == NO_ANSWER) session.abandon()
+            answer
+        }
+        return when {
+            answer.status == PackageInstaller.STATUS_SUCCESS -> InstallResult.Done
+            answer.status == PackageInstaller.STATUS_FAILURE_ABORTED -> InstallResult.Failed("The install was cancelled.")
+            answer.status == NO_ANSWER -> InstallResult.Failed("Android's install screen got no answer, so the install was cancelled.")
+            answer.status == PackageInstaller.STATUS_FAILURE_CONFLICT -> InstallResult.Conflict(answer.message)
+            answer.status == PackageInstaller.STATUS_FAILURE_BLOCKED ->
+                InstallResult.Failed("This phone doesn't allow installing apps from PlayAgain32 (a phone policy or restriction).")
+            answer.status == PackageInstaller.STATUS_FAILURE_STORAGE -> InstallResult.Failed("Not enough free space on the phone to install it.")
+            else -> neededTarget(answer.message)?.let { InstallResult.NeedsTarget(it) }
+                ?: InstallResult.Failed("Android didn't install it: ${answer.message ?: "no reason given"}")
+        }
+    }
+
+    /**
+     * Android's refusal of a game made for an old version names the version it needs
+     * ("must target at least SDK version 24"). The message is meant for people, so only a
+     * plausible number counts.
+     */
+    private fun neededTarget(message: String?): Int? {
+        val number = Regex("at least SDK version (\\d+)").find(message ?: return null)?.groupValues?.get(1)?.toIntOrNull()
+        return number?.takeIf { it in 1..Build.VERSION.SDK_INT }
+    }
+
+    /** Copies a folder of game data (one folder per package inside) into /sdcard/Android/obb. Null on success, else a plain reason. */
+    fun copyGameData(folder: File): String? {
+        val obb = File(Environment.getExternalStorageDirectory(), "Android/obb")
+        return try {
+            for (source in folder.walkTopDown().filter { it.isFile }) {
+                val target = File(obb, source.relativeTo(folder).path)
+                target.parentFile!!.mkdirs()
+                source.copyTo(target, overwrite = true)
+                if (target.length() != source.length()) return "Installed, but the game data didn't copy completely."
+            }
+            null
+        } catch (failure: Exception) {
+            "Installed, but the game data couldn't be copied (is \"Install unknown apps\" still on for PlayAgain32?): ${failure.message}"
+        }
+    }
+
+    /**
+     * Copies one game data file (loose or from a .zip) into the game's Android/obb folder, keeping its
+     * name. A file whose right copy is known (Games.knownData) must match it. Null on success, else a plain reason.
+     */
+    fun copyDataFile(source: DataSource, packageName: String): String? {
+        val folder = Games.obbFolder(packageName)
+        val partial = File(folder, "${source.name}.part")
+        return try {
+            folder.mkdirs()
+            val digest = MessageDigest.getInstance("SHA-256")
+            source.read { input -> partial.outputStream().use { DigestInputStream(input, digest).copyTo(it) } }
+            val known = Games.knownData[source.name]
+            val fingerprint = digest.digest().joinToString("") { "%02x".format(it) }
+            when {
+                partial.length() != source.size -> "Installed, but its game data didn't copy completely. Tap Convert again."
+                known != null && fingerprint != known.sha256 ->
+                    "Installed, but the game data file in ${source.where} isn't the right one: it is damaged or from another version " +
+                        "(the right one is ${known.size / 1_000_000} MB). Get it again from where you got the game."
+                !partial.renameTo(File(folder, source.name)) -> "Installed, but its game data couldn't be put in place. Tap Convert again."
+                else -> null
+            }.also { if (it != null) partial.delete() }
+        } catch (failure: Exception) {
+            partial.delete()
+            "Installed, but its game data couldn't be copied (is there room on the phone?): ${failure.message}"
+        }
+    }
+
+    /** Kept for upstream callers; this app never removes a game or its saves. */
+    fun uninstall(packageName: String): String? =
+        "Automatic removal is disabled. Manage $packageName in Android Settings; uninstalling can erase its saves."
+
+    /** Deletes a game file from shared storage. Null on success, else a plain reason. */
+    fun delete(file: File): String? =
+        if (file.delete() || !file.exists()) null else "Couldn't delete ${file.name}. Is \"All files access\" still on for PlayAgain32?"
+
+    private class Answer(val status: Int, val message: String?)
+
+    private companion object {
+        /** Not one of Android's statuses: nobody answered the confirmation in time. */
+        const val NO_ANSWER = -1000
+    }
+
+    /**
+     * Starts an install or removal and waits for Android's final answer. When Android first needs
+     * the user to confirm, it sends its confirmation screen, which is shown here; the answer that
+     * matters comes after. Android doesn't let an app open screens while it is in the background,
+     * so then the screen is kept in Confirmation for MainActivity to show when the user comes back.
+     */
+    private fun waitForAnswer(tag: String, start: (IntentSender) -> Unit): Answer {
+        val action = "${context.packageName}.STATUS.$tag"
+        val answers = LinkedBlockingQueue<Answer>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiver: Context, intent: Intent) {
+                val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    val confirm = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                    else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
+                    if (confirm != null) {
+                        confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        // Shown once only: a second copy for the same install, answered with
+                        // Cancel, would make Android report a cancel for an install the first approved.
+                        if (Confirmation.appVisible) context.startActivity(confirm) else Confirmation.waiting.set(confirm)
+                        return
+                    }
+                }
+                Confirmation.waiting.set(null)
+                answers.put(Answer(status, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)))
+            }
+        }
+        // Not exported: only Android's installer, through this app's own PendingIntent, can answer.
+        ContextCompat.registerReceiver(context, receiver, IntentFilter(action), ContextCompat.RECEIVER_NOT_EXPORTED)
+        try {
+            // Mutable: Android adds the status to it (immutable ones are refused for apps targeting 35+).
+            val pending = PendingIntent.getBroadcast(
+                context, tag.hashCode(), Intent(action).setPackage(context.packageName),
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            start(pending.intentSender)
+            return answers.poll(30, TimeUnit.MINUTES) ?: Answer(NO_ANSWER, null)
+        } finally {
+            Confirmation.waiting.set(null)
+            context.unregisterReceiver(receiver)
+        }
+    }
+}
+
+/** Android's confirmation screen for an install or removal that came while PlayAgain32 wasn't on screen. */
+object Confirmation {
+    val waiting = AtomicReference<Intent?>(null)
+
+    /** Whether PlayAgain32 is on screen (MainActivity between onStart and onStop). */
+    @Volatile
+    var appVisible = false
+}

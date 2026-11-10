@@ -1,0 +1,34 @@
+[package]
+name = "arm32-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Proof of concept: run 32-bit ARM Android game code inside a 64-bit process"
+license = "GPL-2.0-or-later"
+
+[lib]
+name = "arm32_bridge"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+dlmalloc = "0.2.14"
+jni-sys = "0.3"
+libc = "0.2.190"
+unicorn-engine = { version = "2.1.5", default-features = false, features = ["arch_arm"] }
+# 32-bit iPhone programs (Mach-O reader and load planner; pure Rust).
+guest32-image = { path = "ios/guest32-image" }
+# The bridge's memory allocator (src/lib.rs); local-dynamic TLS because Android loads the bridge with dlopen.
+mimalloc = { version = "0.1.52", features = ["local_dynamic_tls"] }
+# AI-upscaled picture packs (src/texture_pack.rs): pure-Rust WebP, lossy with alpha.
+image-webp = "0.2"
+# Offline game-server stand-ins (src/offline/storm8.rs); key order kept, Storm8's parser wants "type" first.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[workspace]
+members = ["converter", "pacer", "ios", "ios/guest32-image", "tests/sdk-copy"]
+
+[profile.release]
+debug = 1
+
+# Unicorn with two speed patches (see vendor/unicorn-engine-sys/ARM32-BRIDGE.md).
+[patch.crates-io]
+unicorn-engine-sys = { path = "vendor/unicorn-engine-sys" }
