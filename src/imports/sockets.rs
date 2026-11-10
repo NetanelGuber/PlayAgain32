@@ -145,7 +145,7 @@ fn host_call(uc: &Uc, call: impl FnOnce() -> i64) -> Ret {
     finish(uc, result, error)
 }
 
-fn blocking(uc: &Uc, call: impl FnOnce() -> i64) -> Ret {
+pub(super) fn blocking(uc: &Uc, call: impl FnOnce() -> i64) -> Ret {
     let (result, error) = without_gil(|| {
         let result = call();
         (result, std::io::Error::last_os_error().raw_os_error().unwrap_or(0))

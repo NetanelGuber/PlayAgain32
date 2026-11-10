@@ -91,6 +91,23 @@ fn checked(uc: &Uc, result: i64) -> Ret {
     Ret::U32(result as i32 as u32)
 }
 
+fn blocking_checked(uc: &Uc, work: impl FnOnce() -> i64) -> Ret {
+    let (result, error) = without_gil(|| { let result = work(); (result, last_errno()) });
+    if result < 0 { set_errno(uc, error); }
+    Ret::U32(result as u32)
+}
+
+fn strto_64(uc: &Uc, a: &mut Args, signed: bool) -> Ret {
+    let (text, end_out, base) = (a.u32(), a.u32(), a.i32());
+    let mut end: *mut libc::c_char = std::ptr::null_mut();
+    clear_errno();
+    let value = if signed { (unsafe { libc::strtoll(host_c(text), &mut end, base) }) as u64 }
+        else { unsafe { libc::strtoull(host_c(text), &mut end, base) } };
+    if end_out != 0 { mem().write_u32(end_out, mem().guest(end.cast())); }
+    if last_errno() != 0 { sync_errno(uc); }
+    Ret::U64(value)
+}
+
 fn environment_entries(slot: u32) -> Vec<u32> {
     let mut at = mem().read_u32(slot);
     let mut entries = Vec::new();
@@ -106,6 +123,27 @@ fn environment_entries(slot: u32) -> Vec<u32> {
 fn environment_value(entry: u32, name: &[u8]) -> Option<u32> {
     libc_layout::environment_value_offset(mem().c_str(entry).to_bytes(), name)
         .map(|offset| entry + offset as u32)
+}
+
+fn publish_environment(uc: &Uc, runtime: &mut crate::runtime::Shared, slot: u32, entries: &[u32], new: Option<u32>) -> Ret {
+    let table = crate::runtime::heap().calloc(entries.len() as u32 + 1, 4);
+    if table == 0 {
+        if let Some(string) = new { crate::runtime::heap().free(string); }
+        set_errno(uc, libc::ENOMEM);
+        return Ret::U32(u32::MAX);
+    }
+    for (index, entry) in entries.iter().enumerate() { mem().write_u32(table + index as u32 * 4, *entry); }
+    mem().write_u32(slot, table);
+    let mut heap = crate::runtime::heap();
+    if runtime.state.environ_table != 0 { heap.free(runtime.state.environ_table); }
+    runtime.state.environ_values.retain(|pointer| {
+        let end = u64::from(*pointer) + u64::from(heap.usable_size(*pointer));
+        let referenced = entries.iter().any(|&entry| u64::from(entry) >= u64::from(*pointer) && u64::from(entry) < end);
+        if referenced { true } else { heap.free(*pointer); false }
+    });
+    if let Some(string) = new { runtime.state.environ_values.insert(string); }
+    runtime.state.environ_table = table;
+    Ret::U32(0)
 }
 
 /// Guest pointer for a host pointer that points into guest memory.
@@ -844,15 +882,36 @@ pub fn handler(name: &str) -> Option<Handler> {
         }),
         "strtol" => handler!(|uc, a| strtol_32(uc, a, true)),
         "strtoul" => handler!(|uc, a| strtol_32(uc, a, false)),
-        "strtoll" | "strtoull" | "strtoll_l" | "strtoull_l" => handler!(|uc, a| {
-            let (text, end_out, base) = (a.u32(), a.u32(), a.i32());
-            let mut end: *mut libc::c_char = std::ptr::null_mut();
-            let value = unsafe { libc::strtoull(host_c(text), &mut end, base) };
-            if end_out != 0 {
-                mem().write_u32(end_out, mem().guest(end as *const u8));
+        "strtoll" | "strtoll_l" | "strtoimax" => handler!(|uc, a| strto_64(uc, a, true)),
+        "strtoull" | "strtoull_l" | "strtoumax" => handler!(|uc, a| strto_64(uc, a, false)),
+        "strsep" => handler!(|uc, a| {
+            let (slot, separators) = (a.u32(), a.u32());
+            if slot == 0 { return Ret::U32(0); }
+            let memory = mem();
+            let start = memory.read_u32(slot);
+            if start == 0 { return Ret::U32(0); }
+            let delimiter = memory.c_str(separators).to_bytes();
+            if let Some(offset) = memory.c_str(start).to_bytes().iter().position(|byte| delimiter.contains(byte)) {
+                memory.write_u8(start + offset as u32, 0);
+                memory.write_u32(slot, start + offset as u32 + 1);
+            } else { memory.write_u32(slot, 0); }
+            Ret::U32(start)
+        }),
+        "realpath" => handler!(|uc, a| {
+            let (path, out) = (a.u32(), a.u32());
+            if path == 0 { set_errno(uc, libc::EINVAL); return Ret::U32(0); }
+            let host = unsafe { libc::realpath(host_c(path), std::ptr::null_mut()) };
+            if host.is_null() { sync_errno(uc); return Ret::U32(0); }
+            let text = unsafe { std::ffi::CStr::from_ptr(host) }.to_bytes().to_vec();
+            unsafe { libc::free(host.cast()); }
+            if out == 0 {
+                let result = guest_string_in_heap(&text);
+                if result == 0 { set_errno(uc, libc::ENOMEM); }
+                return Ret::U32(result);
             }
-            sync_errno(uc);
-            Ret::U64(value)
+            if text.len() >= 4096 || out.checked_add(text.len() as u32).is_none() { set_errno(uc, libc::ERANGE); return Ret::U32(0); }
+            mem().write_bytes(out, &text); mem().write_u8(out + text.len() as u32, 0);
+            Ret::U32(out)
         }),
         "strtod" | "strtold" | "strtold_l" => handler!(|uc, a| {
             let (text, end_out) = (a.u32(), a.u32());
@@ -1648,6 +1707,23 @@ pub fn handler(name: &str) -> Option<Handler> {
             checked(uc, unsafe { libc::writev(fd, parts.as_ptr(), parts.len() as i32) } as i64)
         }),
         "close" => handler!(|uc, a| checked(uc, unsafe { libc::close(a.i32()) } as i64)),
+        "flock" => handler!(|uc, a| {
+            let (fd, operation) = (a.i32(), a.i32());
+            blocking_checked(uc, || unsafe { libc::flock(fd, operation) } as i64)
+        }),
+        "sendfile" => handler!(|uc, a| {
+            let (out, input, offset, requested) = (a.i32(), a.i32(), a.u32(), a.u32());
+            if offset != 0 && offset.checked_add(3).is_none() { set_errno(uc, libc::EFAULT); return Ret::U32(u32::MAX); }
+            let mut position = if offset == 0 { 0 } else { mem().read_u32(offset) as i32 as libc::off_t };
+            let mut count = requested.min(i32::MAX as u32) as usize;
+            if offset != 0 && position >= 0 {
+                count = count.min(i32::MAX as usize - position as usize);
+                if count == 0 && requested != 0 { set_errno(uc, libc::EOVERFLOW); return Ret::U32(u32::MAX); }
+            }
+            let result = blocking_checked(uc, || unsafe { libc::sendfile(out, input, if offset == 0 { std::ptr::null_mut() } else { &mut position }, count) } as i64);
+            if offset != 0 && matches!(result, Ret::U32(n) if (n as i32) >= 0) { mem().write_u32(offset, position as u32); }
+            result
+        }),
         "lseek" => handler!(|uc, a| {
             let (fd, offset, whence) = (a.i32(), a.i32(), a.i32());
             checked(uc, unsafe { libc::lseek(fd, offset as libc::off_t, whence) } as i64)
@@ -2083,27 +2159,20 @@ pub fn handler(name: &str) -> Option<Handler> {
             mem().write_bytes(string, &text);
             mem().write_u8(string + size - 1, 0);
             if let Some(index) = existing { entries[index] = string; } else { entries.push(string); }
-            let table = crate::runtime::heap().calloc(entries.len() as u32 + 1, 4);
-            if table == 0 {
-                crate::runtime::heap().free(string);
-                set_errno(uc, libc::ENOMEM);
-                return Ret::U32(u32::MAX);
-            }
-            for (index, entry) in entries.iter().enumerate() {
-                mem().write_u32(table + index as u32 * 4, *entry);
-            }
-            mem().write_u32(slot, table);
-            let mut heap = crate::runtime::heap();
-            if runtime.state.environ_table != 0 { heap.free(runtime.state.environ_table); }
-            // setenv may invalidate getenv results; free only our strings no longer in environ.
-            runtime.state.environ_values.retain(|pointer| {
-                let end = u64::from(*pointer) + u64::from(heap.usable_size(*pointer));
-                let referenced = entries.iter().any(|&entry| u64::from(entry) >= u64::from(*pointer) && u64::from(entry) < end);
-                if referenced { true } else { heap.free(*pointer); false }
-            });
-            runtime.state.environ_values.insert(string);
-            runtime.state.environ_table = table;
-            Ret::U32(0)
+            publish_environment(uc, &mut runtime, slot, &entries, Some(string))
+        }),
+        "unsetenv" => handler!(|uc, a| {
+            let name = a.u32();
+            if name == 0 { set_errno(uc, libc::EINVAL); return Ret::U32(u32::MAX); }
+            let name = mem().c_str(name).to_bytes().to_vec();
+            if !libc_layout::valid_environment_name(&name) { set_errno(uc, libc::EINVAL); return Ret::U32(u32::MAX); }
+            let slot = crate::imports::data_import("environ");
+            let mut runtime = shared();
+            let mut entries = environment_entries(slot);
+            let before = entries.len();
+            entries.retain(|&entry| environment_value(entry, &name).is_none());
+            if entries.len() == before { return Ret::U32(0); }
+            publish_environment(uc, &mut runtime, slot, &entries, None)
         }),
         "strsignal" => handler!(|uc, a| {
             let signal = a.i32();
@@ -2185,7 +2254,21 @@ pub fn handler(name: &str) -> Option<Handler> {
             unsafe { srand48(a.i32() as libc::c_long) };
             Ret::Void
         }),
-        "getpwuid" => handler!(|uc, a| Ret::U32(0)),
+        "getresuid" => handler!(|uc, a| {
+            let pointers = [a.u32(), a.u32(), a.u32()];
+            if pointers.iter().any(|p| *p == 0 || p.checked_add(3).is_none()) { set_errno(uc, libc::EFAULT); return Ret::U32(u32::MAX); }
+            checked(uc, unsafe { libc::getresuid(mem().host(pointers[0]).cast(), mem().host(pointers[1]).cast(), mem().host(pointers[2]).cast()) } as i64)
+        }),
+        "setresuid" => handler!(|uc, a| {
+            let (real, effective, saved) = (a.u32(), a.u32(), a.u32());
+            checked(uc, unsafe { libc::setresuid(real, effective, saved) } as i64)
+        }),
+        "waitpid" => handler!(|uc, a| {
+            let (_pid, _status, options) = (a.i32(), a.u32(), a.i32());
+            // Guest child processes cannot be created: report absence, never wait on host children.
+            set_errno(uc, if options & !(libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED) != 0 { libc::EINVAL } else { libc::ECHILD });
+            Ret::U32(u32::MAX)
+        }),
         // For the self-test: tests that need the translator (time slicing inside game code).
         "arm32_bridge_uses_translator" => handler!(|uc, a| Ret::U32(crate::dynarec::enabled() as u32)),
         // The checker runs every block twice (and one thread at a time): long tests shrink.
@@ -2193,7 +2276,7 @@ pub fn handler(name: &str) -> Option<Handler> {
         "arm32_bridge_runs_in_parallel" => handler!(|uc, a| Ret::U32(crate::runtime::parallel() as u32)),
         "arm32_bridge_wide_classes_from_phone" => handler!(|uc, a| Ret::U32(cfg!(target_os = "android") as u32)),
         "arm32_bridge_forces_fallbacks" => handler!(|uc, a| Ret::U32(crate::dynarec::thumb::force_sync_fallback() as u32)),
-        "fork" | "execl" | "execv" | "system" | "setsid" => handler!(|uc, a| {
+        "fork" | "execl" | "execv" | "execve" | "ptrace" | "system" | "setsid" => handler!(|uc, a| {
             set_errno(uc, libc::ENOSYS);
             Ret::U32(u32::MAX)
         }),
@@ -2514,7 +2597,7 @@ pub fn handler(name: &str) -> Option<Handler> {
             }
             Ret::U32(0)
         }),
-        "gettid" => handler!(|uc, a| Ret::U32(unsafe { libc::gettid() } as u32)),
+        "gettid" => handler!(|uc, a| Ret::U32(crate::imports::threads::current_identity().native_tid.load(std::sync::atomic::Ordering::Acquire))),
         // struct utsname is six 65-byte strings on both sides. A 32-bit program
         // on a 64-bit ARM kernel sees "armv8l" as the machine.
         "uname" => handler!(|uc, a| {

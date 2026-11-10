@@ -21,7 +21,7 @@ try {
         $env:RUSTFLAGS = $rustFlags
     }
     New-Item -ItemType Directory -Force -Path target/host-tests | Out-Null
-    foreach ($source in @('src/elf/validate.rs', 'src/imports/threads/frame_policy.rs', 'src/imports/libc_layout.rs')) {
+    foreach ($source in @('src/elf/validate.rs', 'src/imports/threads/frame_policy.rs', 'src/imports/libc_layout.rs', 'src/imports/message_layout.rs')) {
         $name = [IO.Path]::GetFileNameWithoutExtension($source)
         $exe = Join-Path $repo "target/host-tests/$name.exe"
         & rustup run $RustToolchain rustc --edition=2021 --test $source -o $exe
@@ -40,6 +40,12 @@ try {
             & $clang --target=armv7a-linux-androideabi21 -O1 "-m$mode" -fno-builtin -shared -fPIC -Wall -Wextra -Werror `
                 tests/guest/idle_armies_imports.c -o "target/host-tests/libimports-$mode.so"
             if ($LASTEXITCODE) { throw "ARM32 import regression fixture did not compile: $mode" }
+            & $clang --target=armv7a-linux-androideabi21 -O1 "-m$mode" -fno-builtin -shared -fPIC -Wall -Wextra -Werror `
+                tests/guest/mono_posix_imports.c -o "target/host-tests/libmono-imports-$mode.so"
+            if ($LASTEXITCODE) { throw "Mono/POSIX regression fixture did not compile: $mode" }
+            & $clang --target=armv7a-linux-androideabi21 -O1 "-m$mode" -fno-builtin -shared -fPIC -Wall -Wextra -Werror `
+                tests/guest/gles_program_binary.c -lEGL -lGLESv2 -o "target/host-tests/libgles-binary-$mode.so"
+            if ($LASTEXITCODE) { throw "GLES program binary regression fixture did not compile: $mode" }
         }
         Push-Location android
         try {

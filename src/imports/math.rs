@@ -112,6 +112,7 @@ fn ilogb(x: f64) -> i32 {
 
 pub fn handler(name: &str) -> Option<Handler> {
     match name {
+        "fabsf" => handler!(|uc, a| Ret::F32(a.f32().abs())),
         "sin" => unary_double!(c::sin),
         "cos" => unary_double!(c::cos),
         "tan" => unary_double!(c::tan),

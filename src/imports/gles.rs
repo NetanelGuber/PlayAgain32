@@ -1052,7 +1052,7 @@ fn special(name: &str) -> Option<Handler> {
             Ret::Void
         }),
         // The callback is guest code; the driver would call it as host code.
-        "glDebugMessageCallback" => handler!(|uc, a| {
+        "glDebugMessageCallback" | "glDebugMessageCallbackKHR" => handler!(|uc, a| {
             crate::log::line("[bridge] the game set a GL debug callback; ignored");
             Ret::Void
         }),

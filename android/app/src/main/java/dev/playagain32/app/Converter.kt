@@ -155,7 +155,7 @@ class Converter(private val context: Context, private val installer: Installer) 
         val code = process.exitValue()
         if (code != 0) return Attempt.Ended(Outcome.Failed(error ?: "The converter stopped (code $code)."))
         if (missing.isNotEmpty()) return Attempt.Ended(Outcome.Failed(
-            "This game needs native functions the runtime does not implement: ${missing.distinct().take(6).joinToString()}. It was not installed."
+            ApkCompatibility.missingImportsMessage(missing)
         ))
 
         report(Progress(75, "Signing"))

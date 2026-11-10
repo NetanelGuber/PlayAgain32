@@ -58,6 +58,7 @@ const KEYS: usize = 1024;
 /// when the handle is handed out, so a signal can be sent before the thread runs.
 pub struct Identity {
     pub handle: u32,
+    pub native_tid: AtomicU32,
     /// Signals sent and not delivered yet / blocked (bit n-1 = signal n).
     pub pending: AtomicU64,
     pub blocked: AtomicU64,
@@ -81,6 +82,7 @@ impl Identity {
     pub(crate) fn new(handle: u32) -> Identity {
         Identity {
             handle,
+            native_tid: AtomicU32::new(0),
             pending: AtomicU64::new(0),
             blocked: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
@@ -113,7 +115,16 @@ const THREAD_EXIT: &str = "guest thread called pthread_exit";
 
 /// This thread's guest identity, handing one out on first use.
 pub fn current_identity() -> Arc<Identity> {
-    SELF.with(|me| Arc::clone(me.borrow_mut().get_or_insert_with(new_identity)))
+    SELF.with(|me| Arc::clone(me.borrow_mut().get_or_insert_with(|| {
+        let identity = new_identity();
+        identity.native_tid.store(unsafe { libc::gettid() } as u32, Ordering::Release);
+        identity
+    })))
+}
+
+pub fn identity_for_tid(tid: u32) -> Option<Arc<Identity>> {
+    IDENTITIES.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.values()
+        .find(|identity| identity.native_tid.load(Ordering::Acquire) == tid && !identity.dead.load(Ordering::Acquire)).cloned()
 }
 
 /// A signal helper takes on (Some) or gives back (None) the identity of the
@@ -319,7 +330,7 @@ pub fn linux_syscall(uc: &mut Uc, number: u32, arguments: [u32; 6]) -> i64 {
     let [first, second, third, fourth, _, _] = arguments;
     match number {
         240 => futex(uc, first, second, third, fourth) as i64,
-        224 => (unsafe { libc::gettid() }) as i64,
+        224 => current_identity().native_tid.load(Ordering::Acquire) as i64,
         20 => (unsafe { libc::getpid() }) as i64,
         158 => {
             without_gil(|| std::thread::yield_now());
@@ -456,6 +467,7 @@ fn write_attributes(attributes: u32, flags: u32, stack_base: u32, stack_size: u3
 /// Body of a guest thread started with pthread_create.
 fn run_thread(me: Arc<Identity>, start: u32, argument: u32) {
     let handle = me.handle;
+    me.native_tid.store(unsafe { libc::gettid() } as u32, Ordering::Release);
     SELF.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&me)));
     let _lock = hold_gil();
     let uc = engine();

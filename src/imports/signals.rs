@@ -480,6 +480,12 @@ pub fn handler(name: &str) -> Option<Handler> {
             let (thread, signal) = (a.u32(), a.u32());
             Ret::U32(send(thread, signal))
         }),
+        "tkill" => handler!(|uc, a| {
+            let (tid, signal) = (a.i32(), a.u32());
+            if tid <= 0 { return fail(uc, EINVAL); }
+            let Some(identity) = crate::imports::threads::identity_for_tid(tid as u32) else { return fail(uc, ESRCH); };
+            match send(identity.handle, signal) { 0 => Ret::U32(0), error => fail(uc, error) }
+        }),
         "raise" => handler!(|uc, a| {
             let signal = a.u32();
             if matches!(signal, 4 | 6 | 7 | 8 | 11) {

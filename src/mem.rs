@@ -546,7 +546,9 @@ impl GuestHeap {
         }
     }
     pub fn strdup(&mut self, text: &[u8]) -> u32 {
-        let guest = self.malloc(text.len() as u32 + 1);
+        let Some(size) = u32::try_from(text.len()).ok().and_then(|size| size.checked_add(1)) else { return 0 };
+        let guest = self.malloc(size);
+        if guest == 0 { return 0; }
         self.mem.write_bytes(guest, text);
         self.mem.write_u8(guest + text.len() as u32, 0);
         guest

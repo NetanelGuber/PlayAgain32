@@ -1,0 +1,68 @@
+# Idle Armies: missing imports and black-screen startup
+
+Tested 11 November 2026 for **0.1.5-alpha**. [Issue #2](https://github.com/OTAKUWeBer/PlayAgain32/issues/2) supplied Idle Armies 1.20, package `com.grumpyrhinogames.idlearmies`, version code 31.
+
+## What failed
+
+The previous diagnostic displayed only the first six missing imports. Preflight over **all four ARM libraries** found 19:
+
+```text
+execve fabsf flock getgrgid getgrnam getpwnam getresuid ptrace realpath
+recvmsg sendfile sendmsg setresuid strsep strtoimax strtoumax tkill unsetenv waitpid
+```
+
+All 19 now have handlers, and diagnostics include every missing name. The unknown-import installation gate stays enabled.
+
+Passing imports was insufficient: Unity 2018.2 then stopped a translated graphics thread on a null function pointer. Runtime evidence identified missing shader-binary and base-vertex drawing extension handlers. The GLES generator now includes those extensions and the related query, copy, label and marker functions requested by this engine. Pointer arguments still use the existing guest-pointer/bound-buffer conversion. The KHR debug callback follows the existing core callback policy: it is not forwarded as a host function pointer.
+
+## Native behavior and ownership
+
+- Account lookups copy ARM32 `passwd`/`group` layouts, strings and member pointers into reusable guest buffers. They never return host pointers. Lookup buffers are capped at 64 KiB; repeated lookups reuse allocations.
+- `sendmsg`/`recvmsg` convert the ARM32 message, iovec and ancillary layouts. Vector/control sizes are bounded, timestamp widths are converted, and file descriptors omitted by control-buffer truncation are closed.
+- `sendfile` uses a separate host offset before copying back the four-byte guest offset. `flock` and blocking I/O release the guest execution lock and preserve error results.
+- `strtoimax`/`strtoumax` preserve signedness, end pointers and overflow errors. `strsep`, `realpath`, UID queries and `fabsf` use their normal semantics.
+- `unsetenv` shares the existing environment publication/ownership logic, preserving live interior aliases and reclaiming replaced allocations. Guest string duplication now checks allocation failure before writing.
+- `tkill` targets registered guest identities only. Unsupported `execve`/`ptrace` return `-1`/`ENOSYS`; `waitpid` returns `ECHILD` because guest child creation is unsupported. These calls do not pretend to execute child processes or trace other apps.
+
+## Supplied APK checks
+
+Original SHA-256:
+
+```text
+1a09818f6e88c3d5814a4bf1763d264c6c8218e7956efb86d6aa3f50faad22b5
+```
+
+Android SDK `apksigner` verified its v1/v2/v3 signatures. ZIP CRC/path checks passed. Manifest review found Internet, network-state and billing permissions, with no declared accessibility service, device administration, contacts or SMS access. Local Defender reported no threats. These checks are not proof that an APK is harmless or that its signer is the original developer. No game APK, proprietary assets, personal screenshots or raw device logs are distributed here.
+
+Testing used an explicitly prepared **ARM64 diagnostic copy** with the source-built runtime, offline throughout. No accounts, ads or purchases were exercised. Wi-Fi and mobile data remained off; device security protections were not disabled.
+
+## Observed tests
+
+| Check | Result |
+|---|---|
+| Full original ARM library import preflight | Zero missing handlers |
+| Automated host/JVM checks | 69 passed; Android lint and APK assembly passed |
+| Final physical-device validator | Six combined tests passed: imports, Mono/POSIX and GLES, each in ARM and Thumb mode |
+| GLES shader-binary round trip | Compiled, exported, reloaded and linked a real shader program |
+| GLES base-vertex and instanced base-vertex draws | Read-back pixel assertions passed with a bound index buffer |
+| Account/resource stress | 10,000 repeated lookups with bounded arena growth; 2,048 truncated descriptor-transfer cycles |
+| Actual game | ARM64 install, loading screen, animated combat, increasing coins/steps and touch navigation to Feats observed |
+| Lifecycle | Background/resume and cold restart returned to gameplay with progress retained |
+| Captured final game logs | No stopped guest threads, host panic, fatal Java exception or refused heap operation found |
+
+The phone runs Android 14/API 34, uses 4 KiB pages and also supports ARM32. The installed diagnostic game's native ABI was verified as ARM64; the original ARM32 libraries ran through the translator. This does **not** establish Android 17, ARM64-only system behavior or the automatic in-app translation route on such phones. The normal manager would offer the compatible original on this test phone.
+
+Some left-edge DPS/step text is clipped in the captured game UI. General layout repair, long-session stability, game audio, purchases, cloud services, completed-level save integrity and 16 KiB-page execution are not established by this test.
+
+## Repeatable validator
+
+Run the normal native build and `tools/test.ps1`, then build the CLI **in the same PowerShell process** so it uses the same Android build settings:
+
+```powershell
+./tools/build-android.ps1 -NativeOnly
+cargo +stable-x86_64-pc-windows-gnu build --locked --release --target aarch64-linux-android --bin arm32-bridge
+./tools/test.ps1
+./tools/test-device.ps1 -Serial YOUR_AUTHORIZED_DEVICE
+```
+
+The device script copies only project-owned fixtures into its own temporary folder, checks all their imports, runs ARM/Thumb native and real GPU tests with timeouts and lock checks, requires explicit zero test results, and removes its temporary files. It installs no app and changes no device settings. CI compiles all fixtures; actual GPU execution requires the separate device check. A static import validator cannot detect every optional dynamic lookup, graphics failure, missing asset or offline-server dependency. Real game launch remains part of release acceptance.

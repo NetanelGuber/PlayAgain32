@@ -5,6 +5,7 @@ pub mod jni;
 pub mod jni_host;
 pub mod threads;
 pub mod libc_calls;
+mod identities;
 mod libc_layout;
 pub mod math;
 pub mod printf;
@@ -18,6 +19,8 @@ pub mod activity;
 pub mod egl;
 pub mod signals;
 pub mod sockets;
+mod socket_messages;
+mod message_layout;
 pub mod java_cache;
 
 use std::collections::{HashMap, HashSet};
@@ -45,6 +48,7 @@ pub struct State {
     /// Heap-owned environ array; initial strings/array live in misc memory.
     pub environ_table: u32,
     pub environ_values: HashSet<u32>,
+    pub identity_buffers: HashMap<(u32, bool), (u32, u32)>,
     /// gethostbyname's result area (one for the whole game, like bionic's).
     pub hostent: u32,
     /// getservbyport's result area.
@@ -83,6 +87,8 @@ pub fn handler_for(name: &str) -> Option<Handler> {
     threads::handler(name)
         .or_else(|| signals::handler(name))
         .or_else(|| sockets::handler(name))
+        .or_else(|| socket_messages::handler(name))
+        .or_else(|| identities::handler(name))
         .or_else(|| libc_calls::handler(name))
         .or_else(|| math::handler(name))
         .or_else(|| gles::handler(name))

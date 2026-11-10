@@ -1,11 +1,12 @@
-# Compatibility testing for 0.1.3-alpha
+# Compatibility testing
 
-This page records game smoke tests from 0.1.3. For the 0.1.4 native-import regression tests, see [issue #1 evidence](ISSUE-1-NATIVE-IMPORTS.md). Idle Armies itself is not yet verified.
+This page records game smoke tests from 0.1.3 and the 0.1.5 Idle Armies test. See [issue #2 evidence and repeatable device validator](ISSUE-2-IDLE-ARMIES.md) and [0.1.4 native-import regressions](ISSUE-1-NATIVE-IMPORTS.md).
 
-These are short smoke tests, not a universal compatibility or stability certification. Testing used a an anonymized Android test device, Android 14/API 34, 4 KiB pages, with both ARM32 and ARM64 support. Native installation on this phone does not prove translation on an ARM64-only device.
+These are short smoke tests, not a universal compatibility or stability certification. Testing used Android 14/API 34, 4 KiB pages, with both ARM32 and ARM64 support. Native installation on this phone does not prove translation on an ARM64-only device.
 
 | Game/version | Preparation and observed result |
 |---|---|
+| Idle Armies 1.20 | 0.1.5: prepared ARM64 diagnostic copy with original ARM32 libraries translated. Offline combat, touch navigation, increasing coins/steps, background/resume and cold restart with progress retained observed. Some left-edge DPS/step text clips. Full in-app translation routing on ARM64-only devices remains unverified. |
 | Angry Birds Seasons 6.6.2 | Previously prepared ARM64/API-23 diagnostic copy: gameplay, touch, confirmed sound, background/resume, cold restart and offline level loading passed. See [original report](DEVICE-TEST-2026-11-10.md). |
 | 2048 1.1.3 | Java-only, target 22. Imported, prepared to target 23, signed on the phone and installed through PlayAgain32. Grid rendered and swipe input changed tiles. |
 | GLTron 1.1.2 | Java/OpenGL, effective target 8. Imported, prepared to target 23 and installed through PlayAgain32. Tap-to-start and 3D gameplay observed. Some original instruction/end-screen text clips; unresolved. |

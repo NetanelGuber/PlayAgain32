@@ -1,9 +1,16 @@
 package dev.playagain32.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ApkCompatibilityTest {
+    @Test fun missingImportReportsIncludeEverySymbolAndDeduplicate() {
+        val names = (1..19).map { "missing_$it" }
+        val message = ApkCompatibility.missingImportsMessage(names + names)
+        for (name in names) assertTrue(message.contains("$name,") || message.contains("$name."))
+        assertEquals(1, Regex("missing_19\\b").findAll(message).count())
+    }
     private val arm64 = setOf("arm64-v8a")
     private fun route(abis: Set<String>, device: Set<String> = arm64, minSdk: Int = 21) =
         ApkCompatibility.decide(abis, device, minSdk, 36).route

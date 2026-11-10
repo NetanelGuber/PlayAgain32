@@ -2,6 +2,9 @@ package dev.playagain32.app
 
 /** Installation policy and native translation are distinct decisions. */
 object ApkCompatibility {
+    fun missingImportsMessage(names: List<String>): String =
+        "This game needs native functions the runtime does not implement: ${names.distinct().joinToString()}. It was not installed."
+
     enum class Route { TranslateArm32, PrepareSdk, InstallOriginal, Unsupported }
     data class Decision(val route: Route, val explanation: String)
 

@@ -18,9 +18,17 @@ INCLUDE, OUTPUT = sys.argv[1], sys.argv[2]
 EXTENSIONS = {
     "glGenVertexArraysOES", "glBindVertexArrayOES", "glDeleteVertexArraysOES", "glIsVertexArrayOES",
     "glDiscardFramebufferEXT",
+    "glGetProgramBinaryOES", "glProgramBinaryOES",
+    "glGenQueriesEXT", "glDeleteQueriesEXT", "glBeginQueryEXT", "glEndQueryEXT", "glGetQueryObjectui64vEXT",
+    "glCopyImageSubDataOES", "glPatchParameteriOES", "glDrawElementsBaseVertexOES",
+    "glDrawElementsInstancedBaseVertexOES", "glBlendBarrierKHR",
+    "glDebugMessageControlKHR", "glDebugMessageCallbackKHR", "glDebugMessageInsertKHR",
+    "glObjectLabelKHR", "glGetObjectLabelKHR", "glPushDebugGroupKHR", "glPopDebugGroupKHR",
+    "glPushGroupMarkerEXT", "glPopGroupMarkerEXT",
 }
 # Hand-written in gles.rs.
 SPECIAL = {
+    "glDebugMessageCallbackKHR",
     "glVertexAttribPointer", "glDrawElements", "glShaderSource", "glGetString", "glMapBufferOES",
     "glUnmapBufferOES", "glBindBuffer", "glBindVertexArrayOES", "glDeleteBuffers", "glDeleteVertexArraysOES",
     "glGetVertexAttribPointerv", "glGetBufferPointervOES",
