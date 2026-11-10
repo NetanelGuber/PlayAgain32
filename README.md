@@ -8,7 +8,7 @@ An offline Android app, built as a modified fork of [Game Bridge](https://github
 
 **Early alpha · Android 12+ · ARM64.** Compatibility varies by game and device.
 
-[Download an alpha release](https://github.com/OTAKUWeBer/PlayAgain32/releases) · [Compatibility and device tests](docs/COMPATIBILITY-TESTING.md) · [Build and validation status](BUILD-STATUS.md)
+**[Download APK](https://github.com/OTAKUWeBer/PlayAgain32/releases/download/v0.1.4-alpha/PlayAgain32-0.1.4-alpha-arm64-v8a.apk)** · [Release notes](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.4-alpha) · [Compatibility and device tests](docs/COMPATIBILITY-TESTING.md) · [Build status](BUILD-STATUS.md)
 
 ## Using the app
 
@@ -18,7 +18,7 @@ An offline Android app, built as a modified fork of [Game Bridge](https://github
 4. Confirm installation in Android's installer. Import the matching main/patch OBB files if the game needs them and follow the app's data-copy instructions.
 5. Launch the installed game. If it fails, export diagnostics and [report the device, game version and failing step](CONTRIBUTING.md).
 
-Use only [this repository's Releases page](https://github.com/OTAKUWeBer/PlayAgain32/releases) for future published APKs. A source push does not create a release. GitHub Actions development artifacts are for testing and do not provide a persistent update signing identity.
+Official APKs are published on [this repository's Releases page](https://github.com/OTAKUWeBer/PlayAgain32/releases). A source push does not create a release. GitHub Actions development artifacts are for testing and do not provide a persistent update signing identity.
 
 The Android manager uses Kotlin/Jetpack Compose. The native runtime and APK converter use Rust, with the existing Game Bridge ARM/Thumb translator and patched Unicorn reference/fallback engine. Games are installed as their own Android packages; their original Java runs on Android ART.
 
