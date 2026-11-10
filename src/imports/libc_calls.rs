@@ -2097,7 +2097,9 @@ pub fn handler(name: &str) -> Option<Handler> {
             if runtime.state.environ_table != 0 { heap.free(runtime.state.environ_table); }
             // setenv may invalidate getenv results; free only our strings no longer in environ.
             runtime.state.environ_values.retain(|pointer| {
-                if entries.contains(pointer) { true } else { heap.free(*pointer); false }
+                let end = u64::from(*pointer) + u64::from(heap.usable_size(*pointer));
+                let referenced = entries.iter().any(|&entry| u64::from(entry) >= u64::from(*pointer) && u64::from(entry) < end);
+                if referenced { true } else { heap.free(*pointer); false }
             });
             runtime.state.environ_values.insert(string);
             runtime.state.environ_table = table;

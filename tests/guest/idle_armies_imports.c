@@ -23,8 +23,7 @@ int test_div(void) {
 }
 
 int test_environment(void) {
-    char **original = environ;
-    if (!original) return 1;
+    if (!environ) return 1;
     if (setenv("PLAYAGAIN32_TEST_ENV", "one", 1) || !getenv("PLAYAGAIN32_TEST_ENV")) return 2;
     char *entry = NULL;
     const unsigned prefix = sizeof("PLAYAGAIN32_TEST_ENV=") - 1;
@@ -37,12 +36,21 @@ int test_environment(void) {
     if (getenv("PLAYAGAIN32_TEST_EN")) return 6;
     errno = 0;
     if (setenv("BAD=NAME", "bad", 1) != -1 || errno != EINVAL) return 7;
-    char custom[] = "PLAYAGAIN32_DIRECT=edited";
+    static char custom[] = "PLAYAGAIN32_DIRECT=edited";
     char *replacement[] = {custom, NULL};
     environ = replacement;
     if (!getenv("PLAYAGAIN32_DIRECT") || strcmp(getenv("PLAYAGAIN32_DIRECT"), "edited")) return 8;
     if (setenv("PLAYAGAIN32_NEW", "added", 1) || strcmp(getenv("PLAYAGAIN32_DIRECT"), "edited")) return 9;
-    environ = original;
+    if (setenv("XPLAYAGAIN32_ALIAS", "kept", 1)) return 10;
+    char *alias = NULL;
+    for (char **at = environ; *at; ++at) {
+        if (!strncmp(*at, "XPLAYAGAIN32_ALIAS=", sizeof("XPLAYAGAIN32_ALIAS=") - 1)) alias = *at + 1;
+    }
+    if (!alias) return 11;
+    static char *aliases[2];
+    aliases[0] = alias; aliases[1] = NULL;
+    environ = aliases;
+    if (setenv("TRIGGER", "value", 1) || !getenv("PLAYAGAIN32_ALIAS") || strcmp(getenv("PLAYAGAIN32_ALIAS"), "kept")) return 12;
     return 0;
 }
 
