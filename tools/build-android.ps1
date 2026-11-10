@@ -46,13 +46,18 @@ $env:CMAKE_TOOLCHAIN_FILE = Join-Path $Ndk 'build/cmake/android.toolchain.cmake'
 $env:CC_aarch64_linux_android = $clang
 $env:CXX_aarch64_linux_android = Join-Path $bin 'clang++.exe'
 $env:AR_aarch64_linux_android = Join-Path $bin 'llvm-ar.exe'
-$env:CFLAGS_aarch64_linux_android = '--target=aarch64-linux-android30'
-$env:CXXFLAGS_aarch64_linux_android = '--target=aarch64-linux-android30'
+$pathMaps = @("-ffile-prefix-map=$repo=/src/playagain32", "-ffile-prefix-map=$env:USERPROFILE=/build-user",
+    "-ffile-prefix-map=$($repo.Replace('\', '/'))=/src/playagain32", "-ffile-prefix-map=$($env:USERPROFILE.Replace('\', '/'))=/build-user")
+$env:CC_SHELL_ESCAPED_FLAGS = '1'
+$env:CFLAGS_aarch64_linux_android = '--target=aarch64-linux-android30 ' + (($pathMaps | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+$env:CXXFLAGS_aarch64_linux_android = $env:CFLAGS_aarch64_linux_android
 $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $clang
 $builtins = Get-ChildItem -LiteralPath (Join-Path $llvm 'lib/clang') -Recurse -Filter libclang_rt.builtins-aarch64-android.a | Select-Object -First 1
 if (!$builtins) { throw 'NDK ARM64 compiler builtins archive is missing.' }
 # Encoded flags preserve paths containing spaces as individual Rust arguments.
-$env:CARGO_ENCODED_RUSTFLAGS = @('-C', 'link-arg=--target=aarch64-linux-android30', '-C', "link-arg=$($builtins.FullName)", '-L', (Join-Path $repo 'android-link-stubs')) -join [char]31
+$env:CARGO_ENCODED_RUSTFLAGS = @('-C', 'link-arg=--target=aarch64-linux-android30', '-C', "link-arg=$($builtins.FullName)", '-L', (Join-Path $repo 'android-link-stubs'),
+    "--remap-path-prefix=$repo=/src/playagain32", "--remap-path-prefix=$env:USERPROFILE=/build-user",
+    "--remap-path-prefix=$($repo.Replace('\', '/'))=/src/playagain32", "--remap-path-prefix=$($env:USERPROFILE.Replace('\', '/'))=/build-user") -join [char]31
 $env:CLANG_PATH = $clang
 $clangHeaders = Join-Path $builtins.Directory.Parent.Parent.FullName 'include'
 $env:BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "--target=aarch64-linux-android30 --sysroot=`"$(Join-Path $llvm 'sysroot')`" -isystem `"$clangHeaders`""
@@ -75,7 +80,7 @@ try {
     }
     & (Join-Path $bin 'llvm-strip.exe') -o (Join-Path $libs 'libapkconvert.so') (Join-Path $out 'apk-convert')
     if ($LASTEXITCODE) { throw 'Stripping converter failed.' }
-    & $clang --target=aarch64-linux-android30 -O2 -shared -fPIC '-Wl,--build-id=none' -o (Join-Path $libs 'libstandin.so') (Join-Path $repo 'tools/standin/standin.c') -llog -ldl
+    & $clang --target=aarch64-linux-android30 @pathMaps -O2 -shared -fPIC '-Wl,--build-id=none' -o (Join-Path $libs 'libstandin.so') (Join-Path $repo 'tools/standin/standin.c') -llog -ldl
     if ($LASTEXITCODE) { throw 'Stand-in library build failed.' }
     foreach ($name in @('libarm32_bridge.so', 'libgamebridge_pacer.so', 'libapkconvert.so', 'libstandin.so')) {
         $file = Join-Path $libs $name

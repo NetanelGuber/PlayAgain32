@@ -195,6 +195,12 @@ fn main() -> ExitCode {
         Err(error) => Err(Failure::Other(error)),
     };
     let _ = std::fs::remove_dir_all(&scratch);
+    // Preflight may create an engine; release it while allocator TLS is alive.
+    arm32_bridge::runtime::drop_engine();
+    if let Err(error) = arm32_bridge::runtime::stop_engine_builder() {
+        println!("error {error}");
+        return ExitCode::FAILURE;
+    }
     match result {
         Ok(()) => {
             println!("done {}", options.output.display());

@@ -46,5 +46,7 @@ try {
             & .\gradlew.bat --no-daemon testDebugUnitTest lintDebug assembleDebug
             if ($LASTEXITCODE) { throw 'Android tests, lint or assembly failed.' }
         } finally { Pop-Location }
+        & python tools/verify_apk.py android/app/build/outputs/apk/debug/app-debug.apk
+        if ($LASTEXITCODE) { throw 'APK build-path privacy check failed.' }
     }
 } finally { Pop-Location }

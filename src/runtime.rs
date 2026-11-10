@@ -1520,21 +1520,38 @@ unsafe impl Send for PooledEngine {}
 static ENGINE_POOL: (Mutex<Vec<PooledEngine>>, Condvar) = (Mutex::new(Vec::new()), Condvar::new());
 const SPARE_ENGINES: usize = 2;
 const KEPT_ENGINES: usize = 4;
+static ENGINE_BUILDER_STOP: AtomicBool = AtomicBool::new(false);
+static ENGINE_BUILDER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 fn start_engine_builder() {
-    let _ = std::thread::Builder::new().name("arm32-engines".into()).spawn(|| {
+    let worker = std::thread::Builder::new().name("arm32-engines".into()).spawn(|| {
         let (pool, wanted) = &ENGINE_POOL;
         loop {
             {
                 let mut engines = pool.lock().unwrap_or_else(|e| e.into_inner());
-                while engines.len() >= SPARE_ENGINES {
+                while engines.len() >= SPARE_ENGINES && !ENGINE_BUILDER_STOP.load(Ordering::Acquire) {
                     engines = wanted.wait(engines).unwrap_or_else(|e| e.into_inner());
                 }
+                if ENGINE_BUILDER_STOP.load(Ordering::Acquire) { return; }
             }
             let engine = Box::into_raw(Box::new(build_engine()));
             pool.lock().unwrap_or_else(|e| e.into_inner()).push(PooledEngine(engine));
         }
     });
+    *ENGINE_BUILDER.lock().unwrap_or_else(|e| e.into_inner()) = worker.ok();
+}
+
+/// CLI process shutdown: no worker may allocate after allocator TLS/atexit cleanup starts.
+pub fn stop_engine_builder() -> Result<(), &'static str> {
+    let (pool, wanted) = &ENGINE_POOL;
+    {
+        let _engines = pool.lock().unwrap_or_else(|e| e.into_inner());
+        ENGINE_BUILDER_STOP.store(true, Ordering::Release);
+        wanted.notify_all();
+    }
+    let worker = ENGINE_BUILDER.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(worker) = worker { worker.join().map_err(|_| "engine-preparation worker failed during shutdown")?; }
+    Ok(())
 }
 
 fn take_engine() -> Box<Uc> {

@@ -1,5 +1,7 @@
 # Contributing
 
+Keep public test reports anonymous. Include only the Android/API version, ABI and memory-page size needed to assess compatibility. Keep device models/vendors, serials, account information, host usernames, personal screenshots and private device logs out of commits, issues, release notes and source archives. Store necessary local evidence in ignored build directories.
+
 PlayAgain32 is an experimental Android compatibility runtime. Keep changes small and preserve upstream copyright and license notices. Contributions must be compatible with the repository's GPL terms.
 
 1. Follow [the Windows build guide](tools/BUILD-WINDOWS.md) and build the native runtime.

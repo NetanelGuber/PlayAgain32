@@ -6,7 +6,7 @@ The submitted report identifies Idle Armies 1.20 (`com.grumpyrhinogames.idlearmi
 
 ## Implemented behavior
 
-| Symbol | Candidate behavior |
+| Symbol | 0.1.4 behavior |
 |---|---|
 | `div` | Signed quotient/remainder with C truncation rules, written through the ARM32 hidden result pointer. Undefined zero/overflow cases stop guest execution rather than panic the host. |
 | `environ` | Guest-memory, null-terminated vector of 32-bit pointers to guest strings. Initialized from the process environment; guest `getenv`/`setenv` use this same vector, including guest replacement of the vector. Guest environment changes do not mutate the Android host environment. |
@@ -21,12 +21,12 @@ The unknown-import installation gate remains enabled. No fake success handler wa
 
 ## Checks observed
 
-- All 64 focused automated tests passed: the previous 60 plus four production ABI/environment-layout tests. Android lint and debug APK assembly passed; the ARM64 runtime/converter were rebuilt from source.
+- All 65 focused automated tests passed, including production ABI/environment-layout coverage and binary build-path privacy detection. Android lint and debug APK assembly passed; the ARM64 runtime/converter were rebuilt from source.
 - `tests/guest/idle_armies_imports.c` compiled for both ARM and Thumb with NDK Clang, warnings treated as errors. Static assertions check 32-bit pointers, the 8-byte division result and epoll event layout. `tools/test.ps1` now compiles both variants when Android checks run.
 - Physical device: an anonymized Android test device, Android 14/API 34, 4 KiB pages. It supports both ARM32 and ARM64; the runner is an ARM64 executable explicitly running ARM32 guest code through the compatibility engine.
 - Combined import preflight over both test libraries reported **0 imports without a handler**.
-- Default ARM64 translator: division, environment, epoll and execv tests plus the combined test all returned 0 in both ARM and Thumb modes: **10 successful runtime invocations**. Lock checking was enabled. Tests cover negative division, environment vector traversal/replacement, overwrite rules, epoll cookies/one-shot/rearm/delete/timeouts/errors, and execv refusal.
-- Unicorn reference engine: the same 10 invocations returned their expected zero results and shell exit status 0, but each emitted an allocation warning during shutdown. An import-free control (`int control(void) { return 42; }`) returned 42 and emitted the same warning, independently of the new handlers. This is recorded as an unresolved reference-engine cleanup concern, not a clean reference-engine pass. The default translator tests did not emit that warning.
+- Default ARM64 translator: **18 successful final runtime invocations** across ARM and Thumb, including individual symbol tests, combined tests, memory/resource stress and heap-growth measurement. Lock checking was enabled. Measured guest arena growth after 10,000 environment replacements was zero bytes in each mode; forced allocation failures preserved state, and 2,048 epoll descriptor cycles passed.
+- Initial reference-engine runs exposed an allocator warning during thread-local shutdown, also reproduced by an import-free control. Explicit engine cleanup plus stopping/joining the engine-preparation worker before allocator teardown corrected the command-line/converter lifecycle. Five final repeated fast-preflight runs also exited cleanly. Both final combined reference-engine runs returned zero without the warning.
 - The development manager updated from 0.1.3 to 0.1.4 in place and cold-launched successfully. Its existing imported files remained present, with the same private-storage paths. No app uninstall/data clearing was performed.
 
 Local evidence is retained under ignored `.build/issue-1/`, including individual device logs and `device-results.json`. No private device logs, game APKs or game assets are committed.
@@ -45,3 +45,5 @@ Copy `target/aarch64-linux-android/release/arm32-bridge` and both `target/host-t
 ## Remaining acceptance gate
 
 The Idle Armies APK was neither installed nor found under Downloads on the test phone. Its actual full import list, APK hash, in-app preparation/install, startup, gameplay and save behavior have not been verified. Android 17/ARM64-only behavior also remains untested. These synthetic tests establish the tested handler behavior; they do not establish that Idle Armies is playable. Do not close the compatibility issue solely because these symbols now resolve.
+
+See the [focused security and memory review](SECURITY-REVIEW-0.1.4.md) for allocation ownership, test scope and publication privacy.

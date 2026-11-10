@@ -60,6 +60,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'APK signature verification failed.' }
           & (Join-Path $buildTools 'zipalign.exe') -c -P 16 4 $apk
           if ($LASTEXITCODE) { throw 'APK alignment verification failed.' }
+          python tools/verify_apk.py $apk
+          if ($LASTEXITCODE) { throw 'APK privacy verification failed.' }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item $apk "dist/PlayAgain32-$version.apk"
           & git archive --format=zip --output="dist/PlayAgain32-$version-source.zip" HEAD

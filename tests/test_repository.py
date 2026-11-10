@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import subprocess
 import unittest
+from tools.verify_apk import contains_private_build_path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -12,6 +13,14 @@ def git(*args):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_binary_build_path_detection(self):
+        for value in [r"C:\Users\private-builder\.cargo\src\code.rs", "C:/Users/private-builder/.cargo/code.rs",
+                      "/home/private-builder/project/code.rs", "/Users/private-builder/project/code.rs"]:
+            self.assertTrue(contains_private_build_path(value.encode()))
+            self.assertTrue(contains_private_build_path(value.encode("utf-16-le")))
+        for value in [b"/src/playagain32/src/mem.rs", b"/build-user/.cargo/registry/code.rs", b"/rustc/hash/library/std.rs"]:
+            self.assertFalse(contains_private_build_path(value))
+
     def test_private_and_generated_files_are_ignored(self):
         paths = [".env", ".env.local", "signing/release.jks", "release.keystore",
                  "private.pem", "game.apk", "main.game.obb",

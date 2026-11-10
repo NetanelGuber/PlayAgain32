@@ -20,7 +20,7 @@ pub mod signals;
 pub mod sockets;
 pub mod java_cache;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::runtime::{mem, shared, Handler};
 
@@ -44,6 +44,7 @@ pub struct State {
     pub static_text: u32,
     /// Heap-owned environ array; initial strings/array live in misc memory.
     pub environ_table: u32,
+    pub environ_values: HashSet<u32>,
     /// gethostbyname's result area (one for the whole game, like bionic's).
     pub hostent: u32,
     /// getservbyport's result area.

@@ -15,7 +15,7 @@ Verified locally on 11 November 2026. This is an experimental alpha. Resolving a
 
 | Check | Observed local result |
 |---|---|
-| Publication checks: ignored secrets/build outputs, private-key scan, documentation links | 3 passed |
+| Publication checks: ignored secrets/build outputs, private-key scan, documentation links | 4 passed |
 | Production compiled-manifest / SDK-copy tests | 16 passed |
 | Shared ELF metadata validator tests | 14 passed |
 | Frame-policy tests | 2 passed |
@@ -29,19 +29,23 @@ Verified locally on 11 November 2026. This is an experimental alpha. Resolving a
 | Android Kotlin/Compose compilation, lint and debug assembly | Passed; existing lint warnings remain |
 | Development APK signature / ZIP/native alignment | Passed |
 
-**64 focused automated tests passed.** Android tasks may reuse valid Gradle outputs. Local build/test logs are in ignored `.build/issue-1-*.log`; Android reports are under `android/app/build/`. [Hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions) rebuilds native files from source and runs the checks; local results do not certify a new hosted run before it finishes.
+**65 focused automated tests passed.** Android tasks may reuse valid Gradle outputs. Local build/test logs are in ignored `.build/issue-1-*.log`; Android reports are under `android/app/build/`. [Hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions) rebuilds native files from source and runs the checks; local results do not certify a new hosted run before it finishes.
 
 ## Physical-device evidence
 
 On a an anonymized Android test device with Android 14/API 34 and 4 KiB pages, an ARM64 runner executed synthetic ARM32 code through the compatibility engine. The phone also supports native ARM32; this does not establish Android 17 or ARM64-only system behavior.
 
 - Combined import preflight for ARM/Thumb regression libraries reported zero missing imports.
-- Ten default-translator invocations passed: four individual symbol-family tests and a combined test, in both ARM and Thumb modes, with lock checking enabled.
+- Eighteen final default-translator invocations passed across ARM and Thumb, with lock checking enabled, including memory/resource stress and heap-growth measurements.
 - Tests exercise the division hidden result pointer, environment vector/overwrite behavior, epoll cookies/one-shot/rearm/delete/timeouts/errors, and explicit `execv` refusal.
-- Ten Unicorn reference-engine invocations returned expected zero results, but logged an unresolved shutdown allocation warning. The same warning occurred with an import-free control. Default-translator tests did not emit it.
+- An allocator warning in initial CLI shutdown tests was corrected by releasing engines and stopping/joining the preparation worker before allocator teardown; five repeated fast preflight exits were also clean. Final combined ARM and Thumb reference-engine tests returned zero without the warning.
 - The development manager updated in place to 0.1.4 and cold-launched; existing imported files remained present. No installed app or game data was cleared.
 
 See [issue #1 implementation and evidence](docs/ISSUE-1-NATIVE-IMPORTS.md), [game smoke-test matrix](docs/COMPATIBILITY-TESTING.md), and [original Angry Birds device report](docs/DEVICE-TEST-2026-11-10.md).
+
+## Security and privacy
+
+Replaced environment strings and vectors are reclaimed, failed updates roll back safely, and epoll scratch allocations remain bounded. Repeated-update tests measured zero additional guest arena growth after warm-up. Personal device details were removed from public history/archives, and native builds remap private paths. Local, CI and release APK checks reject embedded build-user home paths. See the [focused review](docs/SECURITY-REVIEW-0.1.4.md); these checks do not establish global leak freedom or replace an external audit.
 
 ## Scope and remaining limits
 

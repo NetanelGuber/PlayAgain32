@@ -335,5 +335,11 @@ fn main() -> ExitCode {
     if arm32_bridge::dynarec::enabled() && (runtime::stats_enabled() || arm32_bridge::dynarec::check::enabled()) {
         arm32_bridge::dynarec::print_stats();
     }
+    // Return the engine before allocator TLS starts shutting down.
+    runtime::drop_engine();
+    if let Err(error) = runtime::stop_engine_builder() {
+        eprintln!("[bridge] {error}");
+        return ExitCode::FAILURE;
+    }
     code
 }

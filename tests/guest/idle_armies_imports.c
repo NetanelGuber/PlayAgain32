@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -77,7 +78,76 @@ int test_execv(void) {
     return execv("/system/bin/true", args) == -1 && errno == ENOSYS ? 0 : 1;
 }
 
+static unsigned environment_growth;
+int test_environment_memory(void) {
+    char value[8192];
+    memset(value, 'x', sizeof(value) - 1);
+    value[sizeof(value) - 1] = 0;
+    for (int i = 0; i < 64; ++i) {
+        if (setenv("PLAYAGAIN32_MEMORY", i & 1 ? value : "short", 1)) return 1;
+    }
+    unsigned before = mallinfo().arena;
+    for (int i = 0; i < 10000; ++i) {
+        if (setenv("PLAYAGAIN32_MEMORY", i & 1 ? value : "short", 1)) return 2;
+    }
+    environment_growth = mallinfo().arena - before;
+    return environment_growth > 65536 ? 3 : 0;
+}
+
+int measure_environment_growth(void) {
+    return test_environment_memory() ? -1 : (int)environment_growth;
+}
+
+int test_environment_allocation_failure(void) {
+    static void *blocks[8192];
+    static char *replacement[1025];
+    char value[8192];
+    memset(value, 'x', sizeof(value) - 1); value[sizeof(value) - 1] = 0;
+    if (setenv("PLAYAGAIN32_FAILURE", "before", 1)) return 1;
+    char **original = environ;
+    unsigned count = 0;
+    const unsigned sizes[] = {1048576, 16384, 1024, 64};
+    for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        while (count < sizeof(blocks) / sizeof(blocks[0])) {
+            void *block = malloc(sizes[i]);
+            if (!block) break;
+            blocks[count++] = block;
+        }
+    }
+    errno = 0;
+    int ok = setenv("PLAYAGAIN32_FAILURE", value, 1) == -1 && errno == ENOMEM &&
+             !strcmp(getenv("PLAYAGAIN32_FAILURE"), "before");
+    if (!count) return 2;
+    free(blocks[--count]);
+    for (unsigned i = 0; i < 1024; ++i) replacement[i] = "KEEP=value";
+    replacement[1024] = NULL;
+    environ = replacement;
+    errno = 0;
+    ok = ok && setenv("NEW", "value", 1) == -1 && errno == ENOMEM && environ == replacement;
+    while (count) free(blocks[--count]);
+    environ = original;
+    return ok ? 0 : 3;
+}
+
+int test_epoll_resources(void) {
+    for (int i = 0; i < 2048; ++i) {
+        int fd = epoll_create1(EPOLL_CLOEXEC);
+        if (fd < 0 || close(fd)) return 1;
+    }
+    int fd = epoll_create1(EPOLL_CLOEXEC);
+    if (fd < 0) return 2;
+    struct epoll_event event = {0};
+    errno = 0;
+    int ok = epoll_wait(fd, &event, INT32_MAX, 0) == -1 && errno == EINVAL;
+    errno = 0;
+    ok = ok && epoll_wait(fd, (struct epoll_event *)(uintptr_t)0xfffffff8u, 1, 0) == -1 && errno == EFAULT;
+    close(fd);
+    return ok ? 0 : 3;
+}
+
 int run_import_tests(void) {
     return (test_div() ? 1 : 0) | (test_environment() ? 2 : 0) |
-           (test_epoll() ? 4 : 0) | (test_execv() ? 8 : 0);
+           (test_epoll() ? 4 : 0) | (test_execv() ? 8 : 0) |
+           (test_environment_memory() ? 16 : 0) | (test_environment_allocation_failure() ? 32 : 0) |
+           (test_epoll_resources() ? 64 : 0);
 }

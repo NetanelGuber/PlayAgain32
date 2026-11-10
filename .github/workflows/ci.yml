@@ -35,6 +35,8 @@ jobs:
           if ($LASTEXITCODE) { throw 'APK signature verification failed.' }
           & (Join-Path $buildTools 'zipalign.exe') -c -P 16 4 $apk
           if ($LASTEXITCODE) { throw 'APK alignment verification failed.' }
+          python tools/verify_apk.py $apk
+          if ($LASTEXITCODE) { throw 'APK privacy verification failed.' }
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

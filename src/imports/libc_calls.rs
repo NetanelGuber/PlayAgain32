@@ -2066,13 +2066,23 @@ pub fn handler(name: &str) -> Option<Handler> {
             let mut text = name;
             text.push(b'=');
             text.extend_from_slice(mem().c_str(value).to_bytes());
-            let string = guest_string_in_heap(&text);
+            if existing.is_some_and(|index| mem().c_str(entries[index]).to_bytes() == text) { return Ret::U32(0); }
+            let Some(size) = u32::try_from(text.len()).ok().and_then(|size| size.checked_add(1)) else {
+                set_errno(uc, libc::ENOMEM);
+                return Ret::U32(u32::MAX);
+            };
+            if runtime.state.environ_values.try_reserve(1).is_err() {
+                set_errno(uc, libc::ENOMEM);
+                return Ret::U32(u32::MAX);
+            }
+            let string = crate::runtime::heap().malloc(size);
             if string == 0 {
                 set_errno(uc, libc::ENOMEM);
                 return Ret::U32(u32::MAX);
             }
+            mem().write_bytes(string, &text);
+            mem().write_u8(string + size - 1, 0);
             if let Some(index) = existing { entries[index] = string; } else { entries.push(string); }
-            // Keep old value strings alive for getenv pointers retained by guest code.
             let table = crate::runtime::heap().calloc(entries.len() as u32 + 1, 4);
             if table == 0 {
                 crate::runtime::heap().free(string);
@@ -2083,7 +2093,13 @@ pub fn handler(name: &str) -> Option<Handler> {
                 mem().write_u32(table + index as u32 * 4, *entry);
             }
             mem().write_u32(slot, table);
-            if runtime.state.environ_table != 0 { crate::runtime::heap().free(runtime.state.environ_table); }
+            let mut heap = crate::runtime::heap();
+            if runtime.state.environ_table != 0 { heap.free(runtime.state.environ_table); }
+            // setenv may invalidate getenv results; free only our strings no longer in environ.
+            runtime.state.environ_values.retain(|pointer| {
+                if entries.contains(pointer) { true } else { heap.free(*pointer); false }
+            });
+            runtime.state.environ_values.insert(string);
             runtime.state.environ_table = table;
             Ret::U32(0)
         }),
@@ -2125,8 +2141,14 @@ pub fn handler(name: &str) -> Option<Handler> {
             let name = memory.c_str(name).to_bytes();
             let slot = crate::imports::data_import("environ");
             let _runtime = shared();
-            let entries = environment_entries(slot);
-            Ret::U32(entries.into_iter().find_map(|entry| environment_value(entry, name)).unwrap_or(0))
+            let mut at = memory.read_u32(slot);
+            while at != 0 {
+                let entry = memory.read_u32(at);
+                if entry == 0 { break; }
+                if let Some(value) = environment_value(entry, name) { return Ret::U32(value); }
+                at = at.checked_add(4).expect("guest environ pointer overflow");
+            }
+            Ret::U32(0)
         }),
         "setlocale" => handler!(|uc, a| {
             Ret::U32(shared().cached_cstr("locale:C".to_string(), "C"))
