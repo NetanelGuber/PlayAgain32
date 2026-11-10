@@ -1,5 +1,7 @@
 # Compatibility testing for 0.1.3-alpha
 
+This page records game smoke tests from 0.1.3. For the 0.1.4 native-import regression tests, see [issue #1 evidence](ISSUE-1-NATIVE-IMPORTS.md). Idle Armies itself is not yet verified.
+
 These are short smoke tests, not a universal compatibility or stability certification. Testing used a an anonymized Android test device, Android 14/API 34, 4 KiB pages, with both ARM32 and ARM64 support. Native installation on this phone does not prove translation on an ARM64-only device.
 
 | Game/version | Preparation and observed result |

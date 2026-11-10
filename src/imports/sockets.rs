@@ -1,5 +1,6 @@
 use crate::handler;
 use crate::runtime::{mem, shared, without_gil, ArgSource, Handler, Ret, Uc};
+use super::libc_layout;
 
 const SOL_SOCKET: i32 = 1;
 const SO_RCVTIMEO: i32 = 20;
@@ -226,6 +227,44 @@ fn receive_from(uc: &Uc, fd: i32, buffer: u32, length: u32, flags: i32, address:
 
 pub fn handler(name: &str) -> Option<Handler> {
     match name {
+        "epoll_create" => handler!(|uc, a| host_call(uc, || unsafe { libc::epoll_create(a.i32()) } as i64)),
+        "epoll_create1" => handler!(|uc, a| host_call(uc, || unsafe { libc::epoll_create1(a.i32()) } as i64)),
+        "epoll_ctl" => handler!(|uc, a| {
+            let (epfd, op, fd, event) = (a.i32(), a.i32(), a.i32(), a.u32());
+            let mut host = libc::epoll_event { events: 0, u64: 0 };
+            let pointer = if matches!(op, libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD) && event != 0 {
+                if event.checked_add(15).is_none() { return finish(uc, -1, libc::EFAULT); }
+                let (events, data) = libc_layout::read_epoll_event(mem().bytes(event, libc_layout::EPOLL_EVENT_SIZE));
+                host.events = events;
+                host.u64 = data;
+                &mut host as *mut libc::epoll_event
+            } else { std::ptr::null_mut() };
+            host_call(uc, || unsafe { libc::epoll_ctl(epfd, op, fd, pointer) } as i64)
+        }),
+        "epoll_wait" => handler!(|uc, a| {
+            let (epfd, out, maximum, timeout) = (a.i32(), a.u32(), a.i32(), a.i32());
+            if maximum <= 0 || maximum > i32::MAX / libc_layout::EPOLL_EVENT_SIZE as i32 {
+                return finish(uc, -1, libc::EINVAL);
+            }
+            // Bound scratch memory: epoll is allowed to return fewer than maximum events.
+            let count = maximum.min(1024) as usize;
+            if out == 0 || out.checked_add((count * libc_layout::EPOLL_EVENT_SIZE - 1) as u32).is_none() {
+                return finish(uc, -1, libc::EFAULT);
+            }
+            let mut host = vec![libc::epoll_event { events: 0, u64: 0 }; count];
+            let result = blocking(uc, || unsafe { libc::epoll_wait(epfd, host.as_mut_ptr(), count as i32, timeout) } as i64);
+            if let Ret::U32(ready) = result {
+                if (ready as i32) > 0 {
+                    for (index, event) in host.iter().take(ready as usize).enumerate() {
+                        let mut bytes = [0; libc_layout::EPOLL_EVENT_SIZE];
+                        libc_layout::write_epoll_event(&mut bytes, event.events, event.u64);
+                        mem().write_bytes(out + (index * libc_layout::EPOLL_EVENT_SIZE) as u32, &bytes);
+                    }
+                }
+                return Ret::U32(ready);
+            }
+            result
+        }),
         "socket" => handler!(|uc, a| {
             let (domain, kind, protocol) = (a.i32(), a.i32(), a.i32());
             host_call(uc, || unsafe { libc::socket(domain, kind, protocol) } as i64)

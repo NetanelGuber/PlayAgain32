@@ -8,6 +8,8 @@ use crate::imports::{printf, scanf, HostFile};
 use crate::mem::GuestMem;
 use crate::runtime::{call_guest, mem, shared, stop_with_fault, stub_for, ArgSource, Args, GuestCpu, Handler, Ret, Uc, VaList, without_gil, LR, SP};
 
+use super::libc_layout;
+
 
 fn host_c(guest: u32) -> *mut libc::c_char {
     mem().host_or_null(guest) as *mut libc::c_char
@@ -87,6 +89,23 @@ fn checked(uc: &Uc, result: i64) -> Ret {
         sync_errno(uc);
     }
     Ret::U32(result as i32 as u32)
+}
+
+fn environment_entries(slot: u32) -> Vec<u32> {
+    let mut at = mem().read_u32(slot);
+    let mut entries = Vec::new();
+    while at != 0 {
+        let entry = mem().read_u32(at);
+        if entry == 0 { break; }
+        entries.push(entry);
+        at = at.checked_add(4).expect("guest environ pointer overflow");
+    }
+    entries
+}
+
+fn environment_value(entry: u32, name: &[u8]) -> Option<u32> {
+    libc_layout::environment_value_offset(mem().c_str(entry).to_bytes(), name)
+        .map(|offset| entry + offset as u32)
 }
 
 /// Guest pointer for a host pointer that points into guest memory.
@@ -898,6 +917,18 @@ pub fn handler(name: &str) -> Option<Handler> {
         }),
         "atof" => handler!(|uc, a| Ret::F64(unsafe { libc::atof(host_c(a.u32())) })),
         "abs" | "labs" => handler!(|uc, a| Ret::U32(a.i32().wrapping_abs() as u32)),
+        "div" => handler!(|uc, a| {
+            // AAPCS32 returns this 8-byte struct through a hidden first pointer, not r0/r1.
+            let (out, numerator, denominator) = (a.u32(), a.i32(), a.i32());
+            if out == 0 || out.checked_add(7).is_none() {
+                stop_with_fault(uc, "div() has an invalid result pointer".into());
+            } else if let Some(result) = libc_layout::div_result(numerator, denominator) {
+                mem().write_bytes(out, &result);
+            } else {
+                stop_with_fault(uc, "div() has an unrepresentable result".into());
+            }
+            Ret::Void
+        }),
         "llabs" | "imaxabs" => handler!(|uc, a| Ret::U64(a.i64().wrapping_abs() as u64)),
         "tolower" => handler!(|uc, a| Ret::U32(unsafe { libc::tolower(a.i32()) } as u32)),
         "toupper" => handler!(|uc, a| Ret::U32(unsafe { libc::toupper(a.i32()) } as u32)),
@@ -2018,7 +2049,43 @@ pub fn handler(name: &str) -> Option<Handler> {
         }),
         "setenv" => handler!(|uc, a| {
             let (name, value, overwrite) = (a.u32(), a.u32(), a.i32());
-            checked(uc, unsafe { libc::setenv(host_c(name), host_c(value), overwrite) } as i64)
+            if name == 0 || value == 0 {
+                set_errno(uc, libc::EINVAL);
+                return Ret::U32(u32::MAX);
+            }
+            let name = mem().c_str(name).to_bytes().to_vec();
+            if !libc_layout::valid_environment_name(&name) {
+                set_errno(uc, libc::EINVAL);
+                return Ret::U32(u32::MAX);
+            }
+            let slot = crate::imports::data_import("environ");
+            let mut runtime = shared();
+            let mut entries = environment_entries(slot);
+            let existing = entries.iter().position(|&entry| environment_value(entry, &name).is_some());
+            if existing.is_some() && overwrite == 0 { return Ret::U32(0); }
+            let mut text = name;
+            text.push(b'=');
+            text.extend_from_slice(mem().c_str(value).to_bytes());
+            let string = guest_string_in_heap(&text);
+            if string == 0 {
+                set_errno(uc, libc::ENOMEM);
+                return Ret::U32(u32::MAX);
+            }
+            if let Some(index) = existing { entries[index] = string; } else { entries.push(string); }
+            // Keep old value strings alive for getenv pointers retained by guest code.
+            let table = crate::runtime::heap().calloc(entries.len() as u32 + 1, 4);
+            if table == 0 {
+                crate::runtime::heap().free(string);
+                set_errno(uc, libc::ENOMEM);
+                return Ret::U32(u32::MAX);
+            }
+            for (index, entry) in entries.iter().enumerate() {
+                mem().write_u32(table + index as u32 * 4, *entry);
+            }
+            mem().write_u32(slot, table);
+            if runtime.state.environ_table != 0 { crate::runtime::heap().free(runtime.state.environ_table); }
+            runtime.state.environ_table = table;
+            Ret::U32(0)
         }),
         "strsignal" => handler!(|uc, a| {
             let signal = a.i32();
@@ -2053,12 +2120,13 @@ pub fn handler(name: &str) -> Option<Handler> {
         }),
         "getenv" => handler!(|uc, a| {
             let name = a.u32();
-            let value = unsafe { libc::getenv(host_c(name)) };
-            if value.is_null() {
-                return Ret::U32(0);
-            }
-            let text = unsafe { std::ffi::CStr::from_ptr(value) }.to_bytes().to_vec();
-            Ret::U32(guest_string_in_heap(&text))
+            if name == 0 { return Ret::U32(0); }
+            let memory = mem();
+            let name = memory.c_str(name).to_bytes();
+            let slot = crate::imports::data_import("environ");
+            let _runtime = shared();
+            let entries = environment_entries(slot);
+            Ret::U32(entries.into_iter().find_map(|entry| environment_value(entry, name)).unwrap_or(0))
         }),
         "setlocale" => handler!(|uc, a| {
             Ret::U32(shared().cached_cstr("locale:C".to_string(), "C"))
@@ -2101,7 +2169,7 @@ pub fn handler(name: &str) -> Option<Handler> {
         "arm32_bridge_runs_in_parallel" => handler!(|uc, a| Ret::U32(crate::runtime::parallel() as u32)),
         "arm32_bridge_wide_classes_from_phone" => handler!(|uc, a| Ret::U32(cfg!(target_os = "android") as u32)),
         "arm32_bridge_forces_fallbacks" => handler!(|uc, a| Ret::U32(crate::dynarec::thumb::force_sync_fallback() as u32)),
-        "fork" | "execl" | "system" | "setsid" => handler!(|uc, a| {
+        "fork" | "execl" | "execv" | "system" | "setsid" => handler!(|uc, a| {
             set_errno(uc, libc::ENOSYS);
             Ret::U32(u32::MAX)
         }),

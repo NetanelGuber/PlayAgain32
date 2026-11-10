@@ -1,58 +1,58 @@
-# PlayAgain32 0.1.3-alpha build status
+# PlayAgain32 0.1.4-alpha build and validation status
 
-Verified locally before the fresh source publication. This is a development alpha, not a production release or universal-game compatibility certification.
+Verified locally on 11 November 2026. This is an experimental alpha. Resolving a game's imported symbols does not establish gameplay compatibility.
 
-## Installable development artifact
+## Artifacts and signing
 
-- File: `dist/PlayAgain32-0.1.3-alpha.apk` (ignored local output)
-- Size: 36759850 bytes
-- SHA-256: `9e0a6a3e8e950c978c148a782ee94871f811a35aa7eb717a3633b83ad5c8bec3`
-- Application: `dev.legacybridge.app`, version `0.1.3-alpha` / code 4
-- Android minimum API 31; target API 36; compile API 37; native ABI arm64-v8a
-- Launcher: `dev.playagain32.app.OfflineActivity`
-- Local Android development certificate; APK v2 signature and `zipalign -c -P 16 4` verification passed. No production release key has been used.
-- Product name/icon: PlayAgain32. Existing install ID and game-key alias are retained for update compatibility.
+- Public release: [v0.1.4-alpha](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.4-alpha).
+- Release assets: signed ARM64 APK, exact corresponding-source ZIP and `SHA256SUMS.txt`. Use the checksums attached to that release; development APKs have different bytes and signatures.
+- Application ID `dev.legacybridge.app`; version `0.1.4-alpha`, code 5.
+- Android minimum API 31, target API 36, compile API 37; native ABI `arm64-v8a`.
+- Public signing certificate SHA-256: `2a8f9fdbe244488cebf9ebff3e04046731af2feb5f8a74ddf6a71560f09f05f5`. This is the persistent release identity introduced in 0.1.3, distinct from the local debug identity.
+- APK signature and `zipalign -c -P 16 4` checks are required before publication. The private release key stays outside Git and is never embedded in the manager.
 
-## Checks performed
+## Automated checks
 
-| Check | Observed result |
+| Check | Observed local result |
 |---|---|
-| Source-built ARM64 runtime, converter, pacer and stand-in | Passed; no downloaded prebuilt runtime substituted |
 | Publication checks: ignored secrets/build outputs, private-key scan, documentation links | 3 passed |
-| Production compiled-manifest / SDK-copy host tests | 16 passed |
-| Shared ELF metadata validator host tests | 14 passed |
-| Frame-policy host tests | 2 passed |
+| Production compiled-manifest / SDK-copy tests | 16 passed |
+| Shared ELF metadata validator tests | 14 passed |
+| Frame-policy tests | 2 passed |
+| ARM32 libc layout/environment/division tests | 4 passed |
 | Android JVM tests: APK inspection | 12 passed |
 | Android JVM tests: bounded/atomic storage | 6 passed |
 | Android JVM tests: compatibility routing | 6 passed |
 | Android JVM tests: OBB ownership/names | 1 passed |
-| Android lint | Passed; existing warnings remain |
-| Kotlin/Compose compilation and APK assembly | Passed |
-| APK signature and ZIP/native alignment | Passed |
-| Packaged permissions | No INTERNET, MANAGE_EXTERNAL_STORAGE, QUERY_ALL_PACKAGES or deletion permission |
-| License/notices/private-key checks | GPL/Unicorn notices retained; no embedded private signing key |
-| Physical-device smoke tests | Angry Birds diagnostic runtime copy; in-app preparation/install and short play checks for 2048 and GLTron; see test matrix |
+| Synthetic import fixture compilation, ARM and Thumb | Passed, warnings treated as errors; static ABI assertions enforced |
+| Source-built ARM64 runtime and converter | Passed |
+| Android Kotlin/Compose compilation, lint and debug assembly | Passed; existing lint warnings remain |
+| Development APK signature / ZIP/native alignment | Passed |
 
-Total focused automated tests: **60 passed**, including all 25 Android JVM tests. Android tasks may reuse Gradle's valid outputs. Latest local check output is retained in ignored `.build/final-publication-tests.log`; Android XML results and lint reports are under `android/app/build/`.
+**64 focused automated tests passed.** Android tasks may reuse valid Gradle outputs. Local build/test logs are in ignored `.build/issue-1-*.log`; Android reports are under `android/app/build/`. [Hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions) rebuilds native files from source and runs the checks; local results do not certify a new hosted run before it finishes.
 
-The preceding published source passed [hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions). A fresh source push starts its own CI; that earlier result does not certify the new commit. [CI](.github/workflows/ci.yml) builds native files from source, tests, lints, assembles and verifies the APK. The manual [release workflow](.github/workflows/release.yml) requires a persistent owner-provided signing key and produces a draft alpha with source/checksums; production signing has not been exercised.
+## Physical-device evidence
 
-## Changes in this snapshot
+On a an anonymized Android test device with Android 14/API 34 and 4 KiB pages, an ARM64 runner executed synthetic ARM32 code through the compatibility engine. The phone also supports native ARM32; this does not establish Android 17 or ARM64-only system behavior.
 
-- Offline private APK import/library, bounded ZIP/CRC/ELF validation, atomic storage, content deduplication, source-built ARM32 conversion, phone-local game signing and Android-confirmed installation.
-- Old-target compatible Java/native APKs can be prepared without CPU translation: minimum target 23 on Android 14 and 24 on Android 15+. This changes the signature and can expose Android behavior changes.
-- Valid converted bridge/guest layouts and obsolete extra MIPS ABIs are inspected without confusing their ELF class with the host runtime. Unsupported-only architectures remain rejected.
-- Fill screen is an optional manifest change, off by default. It is not a general game-layout repair; Angry Birds menu/HUD clipping remains unresolved with that option enabled.
-- Original game APKs, game data and differently signed installations are preserved. Game timing remains unchanged by default. OBB import and diagnostic export remain available.
+- Combined import preflight for ARM/Thumb regression libraries reported zero missing imports.
+- Ten default-translator invocations passed: four individual symbol-family tests and a combined test, in both ARM and Thumb modes, with lock checking enabled.
+- Tests exercise the division hidden result pointer, environment vector/overwrite behavior, epoll cookies/one-shot/rearm/delete/timeouts/errors, and explicit `execv` refusal.
+- Ten Unicorn reference-engine invocations returned expected zero results, but logged an unresolved shutdown allocation warning. The same warning occurred with an import-free control. Default-translator tests did not emit it.
+- The development manager updated in place to 0.1.4 and cold-launched; existing imported files remained present. No installed app or game data was cleared.
 
-## Device evidence and remaining limits
+See [issue #1 implementation and evidence](docs/ISSUE-1-NATIVE-IMPORTS.md), [game smoke-test matrix](docs/COMPATIBILITY-TESTING.md), and [original Angry Birds device report](docs/DEVICE-TEST-2026-11-10.md).
 
-See [the current test matrix](docs/COMPATIBILITY-TESTING.md) and [the original Angry Birds report](docs/DEVICE-TEST-2026-11-10.md). Testing used one ARM32-capable Android 14 phone. The wider-window Angry Birds probe was reverted to the previously tested fitting build without clearing data. Frozen Bubble, Freedoom and SuperTux were downloaded, but their install/gameplay checks were stopped at the owner's request.
+## Scope and remaining limits
 
-ARM64-only and 16 KiB-page runtime behavior, long-session performance/thermal behavior, completed-level save integrity, a complete in-app Angry Birds flow, general layout correction, split APK bundles, saved-game backup, durable conversion after process death and production signing remain unverified or unfinished. Missing services, original-signature checks and unsupported native functions can still prevent play.
+0.1.4 adds the reported `div`, `environ`, epoll and `execv` handlers. `execv` returns `-1` with `ENOSYS`, matching the existing unsupported process-operation policy; it cannot launch ARM32 child processes. The unknown-import installation gate remains enabled.
+
+The Idle Armies APK was absent from the test phone. Its full import list, in-app preparation/install, startup, gameplay and saves remain unverified. Do not interpret the synthetic tests as a verified game fix or close issue #1 on this evidence alone.
+
+ARM64-only/Android 17 and 16 KiB-page runtime behavior, sustained performance/thermal behavior, completed-level save integrity, general full-screen layout repair, split APK bundles, durable conversion after process death and general save/key migration remain unverified or unfinished. Angry Birds' menu/HUD can clip when Fill screen is enabled; leave that option off for this game. Frozen Bubble, Freedoom and SuperTux gameplay tests remain incomplete.
+
+The manager works offline and has no network permission. Individual games retain their own permissions and requirements. Prepared-game signing keys are phone-local and removed when PlayAgain32 is uninstalled; losing that key can prevent updates without reinstalling those games and potentially losing saves.
 
 ## Rebuild environment
 
-Rust 1.99.1 Windows GNU, Android ARM64 target, NDK 28.2.13676358, CMake 3.22.1/Ninja, libclang 18.1.1, Git for Windows; Gradle 9.7.1, AGP 9.4.1, local JDK 25, SDK platform 37/build-tools 36. CI selects a full JDK 21. See [Windows build instructions](tools/BUILD-WINDOWS.md).
-
-Build-time dependency downloads require network access. The installed manager has no network permission; individual imported games retain their own permissions and network requirements. Keep PlayAgain32 installed to retain its phone-local game signing key. Removing it can prevent future prepared-game updates without reinstalling those games and losing their saves.
+Rust 1.99.1 Windows GNU, Android ARM64 target, NDK 28.2.13676358, CMake 3.22.1/Ninja, libclang 18.1.1, Git for Windows; Gradle 9.7.1, AGP 9.4.1, local JDK 25, SDK platform 37/build-tools 36. CI uses a full JDK 21. See [Windows build instructions](tools/BUILD-WINDOWS.md) and [release process](docs/RELEASING.md).

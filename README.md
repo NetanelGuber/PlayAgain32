@@ -6,7 +6,9 @@
 
 An offline Android app, built as a modified fork of [Game Bridge](https://github.com/braxten509/arm32-bridge), for importing older games and preparing ARM32 native APKs for ARM64-only phones. Early alpha; compatibility is experimental and not universal.
 
-**Status: 0.1.3-alpha.** On Android 14, 2048 and GLTron passed the in-app old-target-SDK preparation/install flow and short gameplay checks. A manually prepared Angry Birds Seasons copy passed sound, touch, background/resume, cold restart and offline level loading. Compatibility remains experimental. See [current testing and limits](docs/COMPATIBILITY-TESTING.md) and [build evidence](BUILD-STATUS.md).
+**Early alpha · Android 12+ · ARM64.** Compatibility varies by game and device.
+
+[Download an alpha release](https://github.com/OTAKUWeBer/PlayAgain32/releases) · [Compatibility and device tests](docs/COMPATIBILITY-TESTING.md) · [Build and validation status](BUILD-STATUS.md)
 
 ## Using the app
 

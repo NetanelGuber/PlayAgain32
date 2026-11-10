@@ -5,6 +5,7 @@ pub mod jni;
 pub mod jni_host;
 pub mod threads;
 pub mod libc_calls;
+mod libc_layout;
 pub mod math;
 pub mod printf;
 pub mod scanf;
@@ -41,6 +42,8 @@ pub struct State {
     pub strtok_next: usize,
     pub static_tm: u32,
     pub static_text: u32,
+    /// Heap-owned environ array; initial strings/array live in misc memory.
+    pub environ_table: u32,
     /// gethostbyname's result area (one for the whole game, like bionic's).
     pub hostent: u32,
     /// getservbyport's result area.
@@ -127,7 +130,7 @@ const BIONIC_FILE_SIZE: u32 = 84;
 /// Whether `data_import` has real data for `name` (not just zero bytes).
 pub fn known_data_import(name: &str) -> bool {
     name.starts_with("SL_IID_")
-        || matches!(name, "__sF" | "__stack_chk_guard" | "_ctype_" | "_tolower_tab_" | "_toupper_tab_" | "__page_size" | "sys_siglist")
+        || matches!(name, "environ" | "__sF" | "__stack_chk_guard" | "_ctype_" | "_tolower_tab_" | "_toupper_tab_" | "__page_size" | "sys_siglist")
 }
 
 /// Guest address for a data object the game imports (stdio, ctype tables...).
@@ -146,6 +149,24 @@ pub fn data_import(name: &str) -> u32 {
     }
     let memory = mem();
     let address = match name {
+        "environ" => {
+            // Host pointers are 64-bit: copy both the vector and its strings into guest memory.
+            let entries: Vec<_> = std::env::vars_os().collect();
+            let table = runtime.misc_alloc((entries.len() as u32 + 1) * 4, 4);
+            for (index, (name, value)) in entries.iter().enumerate() {
+                let mut text = name.as_encoded_bytes().to_vec();
+                text.push(b'=');
+                text.extend_from_slice(value.as_encoded_bytes());
+                let string = runtime.misc_alloc(text.len() as u32 + 1, 1);
+                memory.write_bytes(string, &text);
+                memory.write_u8(string + text.len() as u32, 0);
+                memory.write_u32(table + index as u32 * 4, string);
+            }
+            memory.write_u32(table + entries.len() as u32 * 4, 0);
+            let pointer = runtime.misc_alloc(4, 4);
+            memory.write_u32(pointer, table);
+            pointer
+        }
         "__sF" => {
             let base = runtime.misc_alloc(BIONIC_FILE_SIZE * 3, 8);
             for fd in 0..3 {

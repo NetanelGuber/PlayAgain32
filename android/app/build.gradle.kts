@@ -14,8 +14,8 @@ android {
         applicationId = "dev.legacybridge.app"
         minSdk = 31
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.3-alpha"
+        versionCode = 5
+        versionName = "0.1.4-alpha"
         ndk.abiFilters += "arm64-v8a"
     }
 
