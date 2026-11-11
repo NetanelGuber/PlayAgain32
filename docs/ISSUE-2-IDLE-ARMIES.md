@@ -74,17 +74,24 @@ On Android 17/API 37, ARM64-only, with 4 KiB pages, the rebuilt debug manager's 
 
 Install a manager build that includes the fix and select **Prepare & install** on the imported Idle Armies APK. Preparation copies the updated runtime into the game. Android can update the prepared game in place when the manager still has the signing key used for the existing copy.
 
+## Independent 0.1.6 maintainer validation
+
+On 11 November 2026, all 70 host/JVM checks and all seven physical-device checks passed on Android 14/API 34 with 4 KiB pages. The seventh check is the idle-signal regression; it is now compiled by the native build and executed by the same device validator as the ARM/Thumb fixtures.
+
+The original APK hash matched the report above. The new runtime prepared an ARM64 diagnostic copy with zero missing imports. Installation, offline startup, touch navigation, background/resume and cold restart returned to the game screen. SurfaceFlinger presentation timestamps advanced at all seven samples taken 30 seconds apart over three minutes without agent input. Captured final logs contained no stopped guest thread/signal handler, fatal Java exception, host panic or refused heap operation. The production manager updated from 0.1.5 to 0.1.6 in place and cold-launched without clearing app data.
+
+The test device also supports ARM32, but the diagnostic game and runner were explicitly ARM64. The conditional EXT map/flush fixture branch was skipped because this driver did not advertise `GL_EXT_map_buffer_range`; the contributor's Android 17 run remains the execution evidence for that branch. This does not add independent ARM64-only, Android 17 or 16 KiB-page coverage. Existing left-edge HUD clipping remains.
+
 ## Repeatable validator
 
-Run the normal native build and `tools/test.ps1`, then build the CLI **in the same PowerShell process** so it uses the same Android build settings:
+Run the normal native build, host/Android checks and device validator. The native build now compiles both the CLI runner and the idle-signal regression automatically:
 
 ```powershell
 ./tools/build-android.ps1 -NativeOnly
-cargo +stable-x86_64-pc-windows-gnu build --locked --release --target aarch64-linux-android --bin arm32-bridge
 ./tools/test.ps1
 ./tools/test-device.ps1 -Serial YOUR_AUTHORIZED_DEVICE
 ```
 
 The device script copies only project-owned fixtures into its own temporary folder, checks all their imports, runs ARM/Thumb native and real GPU tests with timeouts and lock checks, requires explicit zero test results, and removes its temporary files. Where the driver advertises `GL_EXT_map_buffer_range`, the GLES fixture maps through a dynamic lookup, calls the static EXT flush import, and checks the rendered pixel. This path passed in both ARM and Thumb mode on the Android 17 test device. It installs no app and changes no device settings. CI compiles all fixtures; actual GPU execution requires the separate device check. A static import validator cannot detect every optional dynamic lookup, graphics failure, missing asset or offline-server dependency. Real game launch remains part of release acceptance.
 
-For the idle signal regression, build the Android test executable with `cargo +stable-x86_64-pc-windows-gnu test --locked --release --target aarch64-linux-android --test idle_signals --no-run` in the same configured shell. Push the executable printed by Cargo to a temporary directory on the device, mark it executable, then run it with `ARM32_ENGINE=jit ARM32_LOCKCHECK=1`. It sends a guest signal from another host thread and checks that the handler finishes before the target re-enters guest code.
+The idle-signal test is included in the same device command, with a timeout and explicit pass-result check. It sends a guest signal from another host thread and checks that the handler finishes before the target re-enters guest code. The source build stages this executable as `target/host-tests/idle-signals`; no manual Cargo-artifact lookup or separate ADB invocation is required.

@@ -8,7 +8,7 @@ An offline Android app, built as a modified fork of [Game Bridge](https://github
 
 **Early alpha · Android 12+ · ARM64.** Compatibility varies by game and device.
 
-**[Download APK](https://github.com/OTAKUWeBer/PlayAgain32/releases/download/v0.1.5-alpha/PlayAgain32-0.1.5-alpha-arm64-v8a.apk)** · [Release notes](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.5-alpha) · [Compatibility and device tests](docs/COMPATIBILITY-TESTING.md) · [Build status](BUILD-STATUS.md)
+**[Download APK](https://github.com/OTAKUWeBer/PlayAgain32/releases/download/v0.1.6-alpha/PlayAgain32-0.1.6-alpha-arm64-v8a.apk)** · [Release notes](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.6-alpha) · [Compatibility and device tests](docs/COMPATIBILITY-TESTING.md) · [Build status](BUILD-STATUS.md)
 
 ## Using the app
 

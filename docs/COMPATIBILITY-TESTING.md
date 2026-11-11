@@ -6,7 +6,7 @@ The original smoke tests used Android 14/API 34, 4 KiB pages, with both ARM32 an
 
 | Game/version | Preparation and observed result |
 |---|---|
-| Idle Armies 1.20 | The 0.1.5 ARM64 diagnostic copy reached offline combat, touch navigation, background/resume and cold restart with progress retained. Some left-edge DPS/step text clipped. A later debug build prepared an ARM64 update with the [idle-freeze fix](ISSUE-2-IDLE-ARMIES.md#idle-freeze-follow-up). |
+| Idle Armies 1.20 | The 0.1.5 ARM64 diagnostic copy reached offline combat, touch navigation, background/resume and cold restart with progress retained. The contributor verified the [idle-freeze fix](ISSUE-2-IDLE-ARMIES.md#idle-freeze-follow-up) on Android 17. Independent 0.1.6 Android 14 testing confirmed startup, touch navigation, resume, cold restart and advancing frame timestamps throughout a three-minute no-input sample. Some left-edge DPS/step text still clips. |
 | Angry Birds Seasons 6.6.2 | Previously prepared ARM64/API-23 diagnostic copy: gameplay, touch, confirmed sound, background/resume, cold restart and offline level loading passed. See [original report](DEVICE-TEST-2026-11-10.md). |
 | 2048 1.1.3 | Java-only, target 22. Imported, prepared to target 23, signed on the phone and installed through PlayAgain32. Grid rendered and swipe input changed tiles. |
 | GLTron 1.1.2 | Java/OpenGL, effective target 8. Imported, prepared to target 23 and installed through PlayAgain32. Tap-to-start and 3D gameplay observed. Some original instruction/end-screen text clips; unresolved. |

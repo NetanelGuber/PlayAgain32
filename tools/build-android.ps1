@@ -71,6 +71,16 @@ try {
     if ($LASTEXITCODE) { throw 'Native runtime build failed.' }
     & cargo "+$RustToolchain" build --locked --release --target aarch64-linux-android -p apk-convert
     if ($LASTEXITCODE) { throw 'Converter build failed.' }
+    & cargo "+$RustToolchain" build --locked --release --target aarch64-linux-android --bin arm32-bridge
+    if ($LASTEXITCODE) { throw 'Device test runner build failed.' }
+    $artifacts = & cargo "+$RustToolchain" test --locked --release --target aarch64-linux-android --test idle_signals --no-run --message-format=json
+    if ($LASTEXITCODE) { throw 'Idle-signal regression compilation failed.' }
+    $idleTest = $artifacts | ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'idle_signals' -and $_.executable } |
+        Select-Object -Last 1 -ExpandProperty executable
+    if (!$idleTest) { throw 'Cargo did not produce the idle-signal test executable.' }
+    New-Item -ItemType Directory -Force -Path (Join-Path $repo 'target/host-tests') | Out-Null
+    Copy-Item -LiteralPath $idleTest -Destination (Join-Path $repo 'target/host-tests/idle-signals') -Force
     $libs = Join-Path $repo 'android/app/src/main/jniLibs/arm64-v8a'
     New-Item -ItemType Directory -Force -Path $libs | Out-Null
     $out = Join-Path $repo 'target/aarch64-linux-android/release'

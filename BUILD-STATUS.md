@@ -1,6 +1,6 @@
-# PlayAgain32 0.1.5-alpha build and validation status
+# PlayAgain32 0.1.6-alpha build and validation status
 
-## Current unreleased source update — 10 November 2026
+## GLES and idle-signal fixes
 
 The follow-up adds capability-gated GLES extension wrappers and correctly uploads explicitly flushed guest buffer ranges. The diagnosis and device evidence are recorded in [Issue #2 evidence](docs/ISSUE-2-IDLE-ARMIES.md#android-17-startup-follow-up).
 
@@ -8,15 +8,15 @@ The source-built ARM64 runtime/converter build and `tools/test.ps1` passed, incl
 
 The runtime can now acknowledge Mono's suspend signal when the target guest thread is between native calls. Existing prepared installs pick up the fix when prepared again with a manager that includes the updated runtime. See the [idle freeze follow-up](docs/ISSUE-2-IDLE-ARMIES.md#idle-freeze-follow-up).
 
-The local manager build is debug-signed, and this workspace has no persistent release keystore. It cannot update PlayAgain32 installations signed with the release certificate.
+These changes were contributed in [PR #3](https://github.com/OTAKUWeBer/PlayAgain32/pull/3). The Android 17 evidence above is contributor-reported. Maintainer validation below uses a separate Android 14 configuration. Production APKs use the persistent release certificate; debug builds use a separate certificate and cannot update production installations in place.
 
 Verified locally on 11 November 2026. Experimental alpha; compatibility varies by game and device.
 
 ## Artifacts and signing
 
-- Release: [v0.1.5-alpha](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.5-alpha).
+- Release: [v0.1.6-alpha](https://github.com/OTAKUWeBer/PlayAgain32/releases/tag/v0.1.6-alpha).
 - Assets: signed ARM64 manager APK, exact corresponding-source ZIP and `SHA256SUMS.txt`.
-- Application ID `dev.legacybridge.app`; version `0.1.5-alpha`, code 6.
+- Application ID `dev.legacybridge.app`; version `0.1.6-alpha`, code 7.
 - Minimum Android API 31, target API 36, compile API 37; native ABI `arm64-v8a`.
 - Persistent public signing certificate SHA-256: `2a8f9fdbe244488cebf9ebff3e04046731af2feb5f8a74ddf6a71560f09f05f5`.
 - Signature verification, `zipalign -c -P 16 4` and build-path privacy checks are required before publication. The private release key stays outside Git and the APK.
@@ -25,7 +25,7 @@ Verified locally on 11 November 2026. Experimental alpha; compatibility varies b
 
 | Check | Local result |
 |---|---|
-| Publication/privacy checks | 4 passed |
+| Publication/privacy/GLES lookup checks | 5 passed |
 | Compiled-manifest / SDK-copy tests | 16 passed |
 | ELF metadata validator | 14 passed |
 | Frame policy | 2 passed |
@@ -36,13 +36,15 @@ Verified locally on 11 November 2026. Experimental alpha; compatibility varies b
 | Source-built runtime/converter | Passed |
 | Android compilation, lint and debug assembly | Passed; existing lint warnings remain |
 
-**69 focused automated tests passed.** [Hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions) rebuilds the runtime and compiles all fixtures. Physical-device execution is a separate check: `tools/test-device.ps1` validates imports and six combined ARM/Thumb native/GPU tests. It asserts real shader-binary round trips and rendered pixels, not just successful symbol resolution. Local logs and Android reports are ignored build output.
+**70 focused automated tests passed.** [Hosted CI](https://github.com/OTAKUWeBer/PlayAgain32/actions) rebuilds the runtime and compiles all fixtures, including the Android idle-signal test. Physical-device execution is a separate check: `tools/test-device.ps1` now runs all seven checks: six combined ARM/Thumb native/GPU tests and the idle-signal regression. All seven passed on the maintainer test device. The GPU checks assert real shader-binary round trips and rendered pixels, including explicit EXT buffer flushing when advertised. The idle check requires signal delivery before another guest call. Local logs and Android reports are ignored build output.
 
 ## Game and device evidence
 
 [Issue #2 evidence](docs/ISSUE-2-IDLE-ARMIES.md) records the full 19 missing imports, their implementations, graphics startup fixes, APK hash and test scope. Idle Armies 1.20's prepared ARM64 diagnostic copy installed and reached animated offline gameplay. Touch navigation, increasing coins/steps, background/resume and cold restart with retained progress were observed. Final captured logs contained no stopped guest threads, panic, fatal Java exception or refused heap operation.
 
-Testing used Android 14/API 34, 4 KiB pages, on a device supporting both ARM32 and ARM64. The diagnostic game and runner were explicitly ARM64, exercising translated ARM32 code. Automatic in-app translation on an ARM64-only phone and the reporter's Android 17 environment remain unverified. Earlier tests: [issue #1 native regressions](docs/ISSUE-1-NATIVE-IMPORTS.md), [game matrix](docs/COMPATIBILITY-TESTING.md), [Angry Birds report](docs/DEVICE-TEST-2026-11-10.md).
+For 0.1.6, maintainer testing independently repeated the ARM64 diagnostic-game install, startup, touch navigation, background/resume and cold restart on Android 14/API 34 with 4 KiB pages. SurfaceFlinger presentation timestamps advanced at every 30-second sample over 180 seconds without agent input. Final captured logs contained no stopped guest threads or signal handlers, fatal Java exception, host panic or refused heap operation. The production-signed manager updated from 0.1.5 to 0.1.6 in place and cold-launched; no existing app was uninstalled or cleared for that update.
+
+This maintainer device supports both ARM32 and ARM64; the diagnostic game and runner were explicitly ARM64, exercising translated ARM32 code. This driver's GLES fixture did not advertise `GL_EXT_map_buffer_range`, so its conditional EXT map/flush branch was skipped; execution of that branch is supported by the contributor's Android 17 evidence, not this independent run. Automatic in-app translation on an ARM64-only phone and the reporter's Android 17 environment were not independently repeated here. Earlier tests: [issue #1 native regressions](docs/ISSUE-1-NATIVE-IMPORTS.md), [game matrix](docs/COMPATIBILITY-TESTING.md), [Angry Birds report](docs/DEVICE-TEST-2026-11-10.md).
 
 ## Security and remaining limits
 
@@ -50,7 +52,7 @@ New message conversions bound vector/control sizes and close truncated transferr
 
 Personal device details and raw logs are excluded from Git and release assets. Native builds remap private host paths, and local/CI APK validation rejects embedded home paths. Downloaded games and proprietary assets are not distributed.
 
-ARM64-only/Android 17, 16 KiB-page execution, sustained thermal/performance behavior and completed-level save integrity remain unverified. Idle Armies has some left-edge DPS/step text clipping. General full-screen layout repair, split APK bundles, durable conversion after process death and general save/key migration are unfinished. Angry Birds' HUD can clip with Fill screen enabled; leave it off for that game. Other game-test gaps are listed in the matrix.
+Android 17/ARM64-only coverage is contributor-reported. Independent 16 KiB-page execution, sustained thermal/performance behavior and completed-level save integrity remain unverified. Idle Armies has some left-edge DPS/step text clipping. General full-screen layout repair, split APK bundles, durable conversion after process death and general save/key migration are unfinished. Angry Birds' HUD can clip with Fill screen enabled; leave it off for that game. Other game-test gaps are listed in the matrix.
 
 The manager works offline without a network permission. Individual games retain their own requirements. Prepared-game signing keys are phone-local and removed when PlayAgain32 is uninstalled; losing a key can prevent updates without reinstalling games and potentially losing saves.
 
