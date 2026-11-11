@@ -1,12 +1,12 @@
 # Compatibility testing
 
-This page records game smoke tests from 0.1.3 and the 0.1.5 Idle Armies test. See [issue #2 evidence and repeatable device validator](ISSUE-2-IDLE-ARMIES.md) and [0.1.4 native-import regressions](ISSUE-1-NATIVE-IMPORTS.md).
+This page records game smoke tests and the Idle Armies follow-up. See [issue #2 evidence and repeatable device validator](ISSUE-2-IDLE-ARMIES.md) and [0.1.4 native-import regressions](ISSUE-1-NATIVE-IMPORTS.md).
 
-These are short smoke tests, not a universal compatibility or stability certification. Testing used Android 14/API 34, 4 KiB pages, with both ARM32 and ARM64 support. Native installation on this phone does not prove translation on an ARM64-only device.
+The original smoke tests used Android 14/API 34, 4 KiB pages, with both ARM32 and ARM64 support. The Idle Armies follow-up used Android 17/API 37, ARM64-only, with 4 KiB pages.
 
 | Game/version | Preparation and observed result |
 |---|---|
-| Idle Armies 1.20 | 0.1.5: prepared ARM64 diagnostic copy with original ARM32 libraries translated. Offline combat, touch navigation, increasing coins/steps, background/resume and cold restart with progress retained observed. Some left-edge DPS/step text clips. Full in-app translation routing on ARM64-only devices remains unverified. |
+| Idle Armies 1.20 | The 0.1.5 ARM64 diagnostic copy reached offline combat, touch navigation, background/resume and cold restart with progress retained. Some left-edge DPS/step text clipped. A later debug build prepared an ARM64 update with the [idle-freeze fix](ISSUE-2-IDLE-ARMIES.md#idle-freeze-follow-up). |
 | Angry Birds Seasons 6.6.2 | Previously prepared ARM64/API-23 diagnostic copy: gameplay, touch, confirmed sound, background/resume, cold restart and offline level loading passed. See [original report](DEVICE-TEST-2026-11-10.md). |
 | 2048 1.1.3 | Java-only, target 22. Imported, prepared to target 23, signed on the phone and installed through PlayAgain32. Grid rendered and swipe input changed tiles. |
 | GLTron 1.1.2 | Java/OpenGL, effective target 8. Imported, prepared to target 23 and installed through PlayAgain32. Tap-to-start and 3D gameplay observed. Some original instruction/end-screen text clips; unresolved. |

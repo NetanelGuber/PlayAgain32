@@ -678,6 +678,8 @@ pub const OUTSIDE: u32 = 1;
 pub const WAITING: u32 = 2;
 /// Stopped at a safe point because the world is stopped.
 pub const PARKED: u32 = 3;
+/// Between top-level host calls into guest code, with an empty guest stack.
+pub const BETWEEN_CALLS: u32 = 4;
 
 /// One host thread that runs guest code (one per engine).
 pub struct Runner {
@@ -826,10 +828,8 @@ pub fn wait_for_borrow_end(identity: &crate::imports::threads::Identity) {
     }
 }
 
-/// A helper (signals.rs) runs this thread's pending signal handlers as if
-/// they came while `target` sat in its phone function: on the target's
-/// identity and slots, with its parked registers, below its parked stack.
-pub fn deliver_for(identity: &Arc<crate::imports::threads::Identity>, target: &Runner) {
+/// Runs pending signal handlers with the target's identity and guest stack.
+pub fn deliver_for(identity: &Arc<crate::imports::threads::Identity>, target: &Runner, idle: bool) {
     crate::imports::threads::adopt_identity(Some(Arc::clone(identity)));
     let uc = engine();
     {
@@ -843,8 +843,15 @@ pub fn deliver_for(identity: &Arc<crate::imports::threads::Identity>, target: &R
         let pointer = (platform().thread_pointer)(target.tls_block);
         let native = thread.native.get_or_insert_with(|| Box::new(crate::dynarec::Native::new(pointer, flag)));
         native.state.tls = pointer;
-        for register in 0..15 {
-            native.state.r[register] = target.parked[register].load(Ordering::Relaxed);
+        if idle {
+            // The completed call's registers and stack frames are no longer live.
+            native.state.r = [0; 16];
+            native.state.r[SP] = target.stack_top - 64;
+            native.state.r[LR] = trap_address(0);
+        } else {
+            for register in 0..15 {
+                native.state.r[register] = target.parked[register].load(Ordering::Relaxed);
+            }
         }
         native.state.clear_exclusive();
         native.active = true;
@@ -852,7 +859,8 @@ pub fn deliver_for(identity: &Arc<crate::imports::threads::Identity>, target: &R
     let _ = uc.reg_write(RegisterARM::C13_C0_3, (platform().thread_pointer)(target.tls_block) as u64);
     // Signals sent meanwhile poke this helper too.
     *identity.helper_runner.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&uc.get_data().runner));
-    let resume_before = std::mem::replace(&mut uc.get_data_mut().resume_at, Some(target.parked[15].load(Ordering::Relaxed)));
+    let resume = if idle { trap_address(0) } else { target.parked[15].load(Ordering::Relaxed) };
+    let resume_before = uc.get_data_mut().resume_at.replace(resume);
     enter_guest(uc);
     crate::imports::signals::deliver_pending_on(uc);
     leave_guest(uc);
@@ -1491,6 +1499,10 @@ fn release_engine(existing: *mut Uc) {
     // The thread has finished: nothing runs on its stack any more (a helper
     // standing in for it is done before this). Thread 1 has the main stack.
     let thread = engine.get_data();
+    if parallel() && thread.runner.helper == 0 {
+        thread.identity.exiting.store(true, Ordering::SeqCst);
+        wait_for_borrow_end(&thread.identity);
+    }
     if thread.id != 1 && thread.stack_top != 0 {
         shared().free_threads.push((thread.id, thread.stack_top, thread.errno_slot, thread.tls_block));
     }
@@ -2426,6 +2438,10 @@ fn call_guest_native(uc: &mut Uc, address: u32, args: &[Arg], packed: bool, dept
     }
     if was_in_guest {
         enter_guest(uc);
+    } else if parallel() && depth == 0 && result.is_ok() {
+        let thread = uc.get_data();
+        thread.runner.state.store(BETWEEN_CALLS, Ordering::SeqCst);
+        crate::imports::signals::request_pending_on_idle(&thread.identity);
     } else {
         leave_guest(uc);
     }

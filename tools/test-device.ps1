@@ -36,7 +36,7 @@ try {
     }
     foreach ($case in $cases) {
         # The CLI exits successfully for any returned integer; require an explicit zero too.
-        $output = (& $adb -s $Serial shell "ARM32_ENGINE=jit ARM32_LOCKCHECK=1 timeout 120 $remote/bridge call $remote/$($case.File) $($case.Function)" 2>&1) -join "`n"
+        $output = (& $adb -s $Serial shell "cd $remote && ARM32_ENGINE=jit ARM32_LOCKCHECK=1 timeout 120 ./bridge call ./$($case.File) $($case.Function)" 2>&1) -join "`n"
         if ($LASTEXITCODE -or $output -notmatch "(?m)^$($case.Function) returned 0 \(0x0\)\r?$" -or
             $output -match 'stopped:|panicked at|\[heap\] refused|\[mimalloc\].*error') {
             throw "Device regression failed: $($case.File)/$($case.Function)`n$output"
@@ -45,6 +45,6 @@ try {
     }
 } finally {
     # Delete only the exact files this invocation created, inside its unique directory.
-    & $adb -s $Serial shell rm "$remote/bridge" @($cases | ForEach-Object { "$remote/$($_.File)" }) *> $null
+    & $adb -s $Serial shell rm -f "$remote/bridge" "$remote/input.dat" "$remote/output.dat" @($cases | ForEach-Object { "$remote/$($_.File)" }) *> $null
     & $adb -s $Serial shell rmdir $remote *> $null
 }

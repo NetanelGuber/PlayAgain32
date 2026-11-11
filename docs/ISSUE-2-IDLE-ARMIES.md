@@ -1,4 +1,4 @@
-# Idle Armies: missing imports and black-screen startup
+# Idle Armies: startup and idle gameplay
 
 Tested 11 November 2026 for **0.1.5-alpha**. [Issue #2](https://github.com/OTAKUWeBer/PlayAgain32/issues/2) supplied Idle Armies 1.20, package `com.grumpyrhinogames.idlearmies`, version code 31.
 
@@ -54,6 +54,26 @@ The phone runs Android 14/API 34, uses 4 KiB pages and also supports ARM32. The 
 
 Some left-edge DPS/step text is clipped in the captured game UI. General layout repair, long-session stability, game audio, purchases, cloud services, completed-level save integrity and 16 KiB-page execution are not established by this test.
 
+## Android 17 startup follow-up
+
+On 10 November 2026, the supplied APK was reproduced on an Android 17/API 37 ARM64-only device with 4 KiB pages. Its SHA-256 matched the APK above. The installed 0.1.5-alpha manager successfully prepared and installed the game, but launch aborted from Unity's `nativeRender` during initial GLES framebuffer setup. The bridge trace ended after `glFramebufferRenderbuffer`; the guest jumped to address zero.
+
+The failure exposed a resolver gap. The game requested GLES extension names through `eglGetProcAddress`, but the bridge had no guest-side wrappers. A separate GLES 3.2 probe confirmed that the host driver exposes five of the requested names: `glLabelObjectEXT`, `glGetObjectLabelEXT`, `glDrawBuffersEXT`, `glBlitFramebufferNV` and `glMapBufferRangeEXT`. The bridge now wraps those calls, converts guest pointers, and only returns a guest stub when EGL exposes the requested function. `glFramebufferTexture3D` and `glTexImage2DMultisample` were absent from the host probe and remain unsupported/null. Optional aliases remain blocked for static-import preflight, where the host context cannot be checked.
+
+The first rebuilt manager no longer aborted at startup, but the game remained on a black screen. Tracing showed that the game repeatedly called `glMapBufferRangeEXT` with `GL_MAP_FLUSH_EXPLICIT_BIT`, then called `glFlushMappedBufferRangeEXT`. The map handler returned a guest-memory copy, but the EXT flush name still used the generated host wrapper, so writes to that copy were never uploaded. Both flush names now upload explicitly flushed guest ranges. The existing EXT import remains available, and calls for driver-owned mappings still go to the host driver.
+
+The source-built Android ARM64 runtime/converter build and the full `tools/test.ps1` workflow passed with the fix. The fork's 0.1.6-alpha/code 7 debug manager updated in place, the supplied APK was prepared and installed again, and its launch reached the game screen on the tested ARM64-only Android 17/API 37, 4 KiB configuration. The user confirmed that the game loaded successfully. This verifies the startup path on that device only; gameplay duration, other Android versions, 16 KiB pages and broad game/device compatibility remain unverified. The locally built manager uses the Android Debug certificate; a persistent release keystore is not configured in this workspace.
+
+## Idle freeze follow-up
+
+With the startup fix alone, the foreground game stopped presenting frames during an idle session. The display stayed awake and Unity's Choreographer callbacks continued. Unity's main thread was blocked in Mono's garbage collector, waiting for a guest thread to acknowledge a suspend signal. The bridge only let signal helpers borrow threads with a live guest call. A thread waiting in Java between native calls could leave Mono waiting until touch input entered guest code again.
+
+The parallel translator now lets signal helpers deliver pending guest signals between top-level calls. The helper uses the target's guest thread identity and an empty guest stack context. Guest re-entry and thread teardown wait for any active helper before using or releasing that stack.
+
+On Android 17/API 37, ARM64-only, with 4 KiB pages, the rebuilt debug manager's packaged converter and on-device signer prepared the original Idle Armies 1.20 APK. The prepared game installed over the previous copy using ADB. SurfaceFlinger continued reporting new frames throughout a three-minute foreground run without input. The game also resumed rendering after a trip to the Android home screen in the same process. The idle signal regression, all six ARM/Thumb device fixtures and `tools/test.ps1` passed. This run covers the reported idle freeze on that configuration.
+
+Install a manager build that includes the fix and select **Prepare & install** on the imported Idle Armies APK. Preparation copies the updated runtime into the game. Android can update the prepared game in place when the manager still has the signing key used for the existing copy.
+
 ## Repeatable validator
 
 Run the normal native build and `tools/test.ps1`, then build the CLI **in the same PowerShell process** so it uses the same Android build settings:
@@ -65,4 +85,6 @@ cargo +stable-x86_64-pc-windows-gnu build --locked --release --target aarch64-li
 ./tools/test-device.ps1 -Serial YOUR_AUTHORIZED_DEVICE
 ```
 
-The device script copies only project-owned fixtures into its own temporary folder, checks all their imports, runs ARM/Thumb native and real GPU tests with timeouts and lock checks, requires explicit zero test results, and removes its temporary files. It installs no app and changes no device settings. CI compiles all fixtures; actual GPU execution requires the separate device check. A static import validator cannot detect every optional dynamic lookup, graphics failure, missing asset or offline-server dependency. Real game launch remains part of release acceptance.
+The device script copies only project-owned fixtures into its own temporary folder, checks all their imports, runs ARM/Thumb native and real GPU tests with timeouts and lock checks, requires explicit zero test results, and removes its temporary files. Where the driver advertises `GL_EXT_map_buffer_range`, the GLES fixture maps through a dynamic lookup, calls the static EXT flush import, and checks the rendered pixel. This path passed in both ARM and Thumb mode on the Android 17 test device. It installs no app and changes no device settings. CI compiles all fixtures; actual GPU execution requires the separate device check. A static import validator cannot detect every optional dynamic lookup, graphics failure, missing asset or offline-server dependency. Real game launch remains part of release acceptance.
+
+For the idle signal regression, build the Android test executable with `cargo +stable-x86_64-pc-windows-gnu test --locked --release --target aarch64-linux-android --test idle_signals --no-run` in the same configured shell. Push the executable printed by Cargo to a temporary directory on the device, mark it executable, then run it with `ARM32_ENGINE=jit ARM32_LOCKCHECK=1`. It sends a guest signal from another host thread and checks that the handler finishes before the target re-enters guest code.

@@ -82,7 +82,7 @@ int test_mono_accounts(void) {
 }
 
 int test_mono_files(void) {
-    const char *a = "/data/local/tmp/playagain32-issue2/input.dat", *b = "/data/local/tmp/playagain32-issue2/output.dat";
+    const char *a = "input.dat", *b = "output.dat";
     int input = open(a, O_CREAT | O_TRUNC | O_RDWR, 0600), output = open(b, O_CREAT | O_TRUNC | O_RDWR, 0600);
     if (input < 0 || output < 0) return 1;
     int other = open(a, O_RDWR);

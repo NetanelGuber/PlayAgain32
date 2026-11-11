@@ -2,6 +2,10 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <stdlib.h>
+#include <string.h>
+
+/* Keep this as an ELF import to exercise conversion preflight too. */
+extern void GL_APIENTRY glFlushMappedBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length);
 
 int test_gles_program_binary(void) {
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -50,7 +54,21 @@ int test_gles_program_binary(void) {
     GLuint buffers[2];
     glGenBuffers(2, buffers);
     glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+    if (extensions && strstr(extensions, "GL_EXT_map_buffer_range")) {
+        PFNGLMAPBUFFERRANGEEXTPROC map = (PFNGLMAPBUFFERRANGEEXTPROC)eglGetProcAddress("glMapBufferRangeEXT");
+        PFNGLUNMAPBUFFEROESPROC unmap = (PFNGLUNMAPBUFFEROESPROC)eglGetProcAddress("glUnmapBufferOES");
+        if (!map || !unmap) return 10;
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), NULL, GL_STATIC_DRAW);
+        GLfloat *mapped = map(GL_ARRAY_BUFFER, sizeof(GLfloat), sizeof(vertices) - sizeof(GLfloat),
+                              GL_MAP_WRITE_BIT_EXT | GL_MAP_INVALIDATE_RANGE_BIT_EXT | GL_MAP_FLUSH_EXPLICIT_BIT_EXT);
+        if (!mapped) return 11;
+        memcpy(mapped + 1, vertices + 2, sizeof(vertices) - 2 * sizeof(GLfloat));
+        glFlushMappedBufferRangeEXT(GL_ARRAY_BUFFER, sizeof(GLfloat), sizeof(vertices) - 2 * sizeof(GLfloat));
+        if (!unmap(GL_ARRAY_BUFFER) || glGetError() != GL_NO_ERROR) return 12;
+    } else {
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    }
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
     glUseProgram(restored);

@@ -24,7 +24,9 @@ EXTENSIONS = {
     "glDrawElementsInstancedBaseVertexOES", "glBlendBarrierKHR",
     "glDebugMessageControlKHR", "glDebugMessageCallbackKHR", "glDebugMessageInsertKHR",
     "glObjectLabelKHR", "glGetObjectLabelKHR", "glPushDebugGroupKHR", "glPopDebugGroupKHR",
+    "glLabelObjectEXT", "glGetObjectLabelEXT", "glDrawBuffersEXT", "glBlitFramebufferNV",
     "glPushGroupMarkerEXT", "glPopGroupMarkerEXT",
+    "glMapBufferRangeEXT",
 }
 # Hand-written in gles.rs.
 SPECIAL = {
@@ -35,7 +37,7 @@ SPECIAL = {
     "glVertexPointer", "glColorPointer", "glTexCoordPointer", "glNormalPointer", "glPointSizePointerOES",
     "glMatrixIndexPointerOES", "glWeightPointerOES", "glGetPointerv",
     "glMultiDrawElementsEXT", "glExtGetBufferPointervQCOM",
-    "glBindVertexArray", "glDeleteVertexArrays", "glMapBufferRange", "glFlushMappedBufferRange", "glUnmapBuffer",
+    "glBindVertexArray", "glDeleteVertexArrays", "glMapBufferRange", "glMapBufferRangeEXT", "glFlushMappedBufferRange", "glFlushMappedBufferRangeEXT", "glUnmapBuffer",
     "glGetBufferPointerv", "glGetStringi", "glTransformFeedbackVaryings", "glGetUniformIndices",
     "glCreateShaderProgramv", "glFenceSync", "glDeleteSync", "glDebugMessageCallback",
 }
