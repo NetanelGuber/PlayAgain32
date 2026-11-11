@@ -1,5 +1,15 @@
 # PlayAgain32 0.1.5-alpha build and validation status
 
+## Current unreleased source update — 10 November 2026
+
+The follow-up adds capability-gated GLES extension wrappers and correctly uploads explicitly flushed guest buffer ranges. The diagnosis and device evidence are recorded in [Issue #2 evidence](docs/ISSUE-2-IDLE-ARMIES.md#android-17-startup-follow-up).
+
+The source-built ARM64 runtime/converter build and `tools/test.ps1` passed, including repository and parser/layout checks, ARM/Thumb fixture compilation, Android JVM tests, lint, debug assembly and APK privacy validation. On a connected ARM64-only Android 17/API 37 device with 4 KiB pages, the supplied Idle Armies 1.20 APK converted and installed with this build; after the buffer-flush follow-up, the game loaded successfully without the original startup abort or black screen. This verifies startup on that configuration only; it does not establish long-session play, 16 KiB-page support or broad device/game compatibility.
+
+The runtime can now acknowledge Mono's suspend signal when the target guest thread is between native calls. Existing prepared installs pick up the fix when prepared again with a manager that includes the updated runtime. See the [idle freeze follow-up](docs/ISSUE-2-IDLE-ARMIES.md#idle-freeze-follow-up).
+
+The local manager build is debug-signed, and this workspace has no persistent release keystore. It cannot update PlayAgain32 installations signed with the release certificate.
+
 Verified locally on 11 November 2026. Experimental alpha; compatibility varies by game and device.
 
 ## Artifacts and signing

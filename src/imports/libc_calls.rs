@@ -595,6 +595,13 @@ fn lookup_symbol(name: &str) -> u32 {
 /// call into its own data.
 fn lookup_phone_symbol(name: &str) -> u32 {
     if crate::imports::handler_for(name).is_some() {
+        #[cfg(target_os = "android")]
+        if crate::imports::gles::dynamic_lookup_only(name)
+            && !crate::imports::gles::phone_function_available(name)
+        {
+            crate::log::line(&format!("[bridge] run-time lookup of {name}: not available on this phone"));
+            return 0;
+        }
         return stub_for(name);
     }
     // Data the bridge provides at load time (OpenSL ES interface IDs...) too.

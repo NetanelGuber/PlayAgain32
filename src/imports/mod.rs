@@ -126,10 +126,11 @@ pub fn missing_imports(paths: &[std::path::PathBuf]) -> Result<Vec<String>, Stri
 /// Whether the phone build of the bridge handles `name` (the PC build lacks
 /// the phone-only parts).
 pub fn phone_handles(name: &str) -> bool {
-    handler_for(name).is_some()
-        || android::NAMES.contains(&name)
-        || egl::NAMES.contains(&name)
-        || activity::NAMES.contains(&name)
+    !gles::dynamic_lookup_only(name)
+        && (handler_for(name).is_some()
+            || android::NAMES.contains(&name)
+            || egl::NAMES.contains(&name)
+            || activity::NAMES.contains(&name))
 }
 
 const BIONIC_FILE_SIZE: u32 = 84;

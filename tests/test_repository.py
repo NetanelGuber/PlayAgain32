@@ -13,6 +13,39 @@ def git(*args):
 
 
 class PublicationTests(unittest.TestCase):
+    def test_idle_armies_gles_dynamic_lookups_are_capability_gated(self):
+        generated = (ROOT / "src/imports/gles_generated.rs").read_text(encoding="utf-8")
+        gles = (ROOT / "src/imports/gles.rs").read_text(encoding="utf-8")
+        resolver = (ROOT / "src/imports/libc_calls.rs").read_text(encoding="utf-8")
+        imports = (ROOT / "src/imports/mod.rs").read_text(encoding="utf-8")
+        generator = (ROOT / "tools/gen_gles.py").read_text(encoding="utf-8")
+        dynamic_only = gles.split("pub fn dynamic_lookup_only", 1)[1].split("\n}", 1)[0]
+
+        # These optional extension names were exposed by the device driver, but
+        # the bridge previously returned NULL because it had no guest wrappers.
+        for name in [
+            "glLabelObjectEXT",
+            "glGetObjectLabelEXT",
+            "glDrawBuffersEXT",
+            "glBlitFramebufferNV",
+            "glMapBufferRangeEXT",
+        ]:
+            with self.subTest(name=name):
+                self.assertIn(name, generator)
+                self.assertTrue(name in generated or name == "glMapBufferRangeEXT")
+                self.assertIn(name, dynamic_only)
+                self.assertIn("!gles::dynamic_lookup_only(name)", imports)
+
+        self.assertIn("phone_function_available(name)", resolver)
+        self.assertIn("dynamic_lookup_only(name)", resolver)
+        self.assertNotIn("glFlushMappedBufferRangeEXT", dynamic_only)
+        self.assertIn('"glFlushMappedBufferRangeEXT" => handler!', gles)
+        self.assertIn("upload(target, start + offset, length, copy + offset)", gles)
+        self.assertIn("eglGetProcAddress(symbol.as_ptr())", gles)
+        # Do not pretend the two unavailable desktop/vendor calls exist.
+        for unsupported in ["glFramebufferTexture3D", "glTexImage2DMultisample"]:
+            self.assertNotIn(f'"{unsupported}" =>', generated)
+
     def test_binary_build_path_detection(self):
         for value in [r"C:\Users\private-builder\.cargo\src\code.rs", "C:/Users/private-builder/.cargo/code.rs",
                       "/home/private-builder/project/code.rs", "/Users/private-builder/project/code.rs"]:

@@ -34,7 +34,6 @@ const GL_BUFFER_SIZE: u32 = 0x8764;
 pub fn guest_pointer(guest: u32) -> *mut c_void {
     mem().host_or_null(guest) as *mut c_void
 }
-
 /// Where host GL functions come from when an embedder has its own (the
 /// iPhone layer: Apple's extensions translated, PVRTC decoded); names it
 /// doesn't know fall back to the system's library.
@@ -68,6 +67,20 @@ pub fn names() -> Vec<&'static str> {
     names.sort_unstable();
     names.dedup();
     names
+}
+
+/// These extension aliases are normally obtained through eglGetProcAddress,
+/// where the host capability can be checked. A static ELF import cannot be
+/// proven safe during the offline conversion preflight, so keep it gated.
+pub fn dynamic_lookup_only(name: &str) -> bool {
+    matches!(
+        name,
+        "glLabelObjectEXT"
+            | "glGetObjectLabelEXT"
+            | "glDrawBuffersEXT"
+            | "glBlitFramebufferNV"
+            | "glMapBufferRangeEXT"
+    )
 }
 
 /// The host GL function `name`, looked up once and cached in `slot`.
@@ -105,6 +118,19 @@ fn lookup(name: &str) -> usize {
         }
         eglGetProcAddress(symbol.as_ptr()) as usize
     }
+}
+
+/// Whether the current EGL implementation exposes this optional GLES entry
+/// point. Used before handing a dynamic lookup to a game, so an unsupported
+/// extension remains NULL instead of becoming a stub that later panics.
+#[cfg(target_os = "android")]
+pub fn phone_function_available(name: &str) -> bool {
+    #[link(name = "EGL")]
+    extern "C" {
+        fn eglGetProcAddress(name: *const libc::c_char) -> *mut c_void;
+    }
+    let Ok(symbol) = std::ffi::CString::new(name) else { return false };
+    unsafe { !eglGetProcAddress(symbol.as_ptr()).is_null() }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -355,17 +381,10 @@ fn string_array(strings: u32, count: i32) -> Vec<*mut c_void> {
 /// Maps `length` bytes at `offset` into a fresh guest copy. Unless the game
 /// said it will overwrite the range, the copy starts with the current contents,
 /// because the copy is uploaded whole.
-fn map_into_copy(target: u32, offset: u32, length: u32, access: u32) -> u32 {
+fn map_into_copy(target: u32, offset: u32, length: u32, access: u32, host_name: &'static str) -> u32 {
     let copy = crate::runtime::heap().malloc(length.max(1));
     if access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT) == 0 {
-        let current = unsafe {
-            host!("glMapBufferRange", fn(u32, isize, isize, u32) -> *mut c_void)(
-                target,
-                offset as isize,
-                length as isize,
-                GL_MAP_READ_BIT,
-            )
-        };
+        let current = host_map_buffer_range(host_name, target, offset, length, GL_MAP_READ_BIT);
         if current.is_null() {
             // A GLES2-only context can't read buffers back; drop the error that left.
             unsafe {
@@ -380,6 +399,39 @@ fn map_into_copy(target: u32, offset: u32, length: u32, access: u32) -> u32 {
         }
     }
     copy
+}
+
+fn host_map_buffer_range(name: &'static str, target: u32, offset: u32, length: u32, access: u32) -> *mut c_void {
+    match name {
+        "glMapBufferRange" => unsafe {
+            host!("glMapBufferRange", fn(u32, isize, isize, u32) -> *mut c_void)(
+                target, offset as isize, length as isize, access,
+            )
+        },
+        "glMapBufferRangeEXT" => unsafe {
+            host!("glMapBufferRangeEXT", fn(u32, isize, isize, u32) -> *mut c_void)(
+                target, offset as isize, length as isize, access,
+            )
+        },
+        _ => unreachable!("unsupported map-buffer-range entry point"),
+    }
+}
+
+fn map_buffer_range(args: &mut crate::runtime::Args, host_name: &'static str) -> Ret {
+    let (target, offset, length, access) = (args.u32(), args.u32(), args.u32(), args.u32());
+    if length == 0 {
+        return Ret::U32(0);
+    }
+    let copy = map_into_copy(target, offset, length, access, host_name);
+    let upload_on_unmap = access & GL_MAP_WRITE_BIT != 0 && access & GL_MAP_FLUSH_EXPLICIT_BIT == 0;
+    if access & 0x40 != 0 {
+        static PERSISTENT_REPORTED: std::sync::Once = std::sync::Once::new();
+        PERSISTENT_REPORTED.call_once(|| {
+            crate::log::line("[gles] game maps buffers persistently; writes reach GL only on flush or unmap")
+        });
+    }
+    remember_mapping(Mapped { target, copy, offset, length, upload_on_unmap });
+    Ret::U32(copy)
 }
 
 /// Records a new mapping of the buffer bound to its target.
@@ -409,6 +461,17 @@ fn upload(target: u32, offset: u32, length: u32, data: u32) {
             guest_pointer(data),
         )
     };
+}
+
+/// Flushes a range of a guest copy. A driver-owned mapping has no guest copy.
+fn flush_guest_mapping(target: u32, offset: u32, length: u32) -> bool {
+    let buffer = buffer_bound_to(target);
+    let found = with_group(|group| group.mapped.get(&buffer).map(|m| (m.copy, m.offset, m.length)));
+    let Some((copy, start, mapped_length)) = found else { return false };
+    if offset <= mapped_length && length <= mapped_length - offset && length != 0 {
+        upload(target, start + offset, length, copy + offset);
+    }
+    true
 }
 
 fn unmap(target: u32) -> u32 {
@@ -954,32 +1017,22 @@ fn special(name: &str) -> Option<Handler> {
             if size <= 0 {
                 return Ret::U32(0);
             }
-            let copy = map_into_copy(target, 0, size as u32, 0);
+            let copy = map_into_copy(target, 0, size as u32, 0, "glMapBufferRange");
             remember_mapping(Mapped { target, copy, offset: 0, length: size as u32, upload_on_unmap: true });
             Ret::U32(copy)
         }),
-        "glMapBufferRange" => handler!(|uc, a| {
-            let (target, offset, length, access) = (a.u32(), a.u32(), a.u32(), a.u32());
-            if length == 0 {
-                return Ret::U32(0);
-            }
-            let copy = map_into_copy(target, offset, length, access);
-            let upload_on_unmap = access & GL_MAP_WRITE_BIT != 0 && access & GL_MAP_FLUSH_EXPLICIT_BIT == 0;
-            if access & 0x40 != 0 {
-                static PERSISTENT_REPORTED: std::sync::Once = std::sync::Once::new();
-                PERSISTENT_REPORTED.call_once(|| {
-                    crate::log::line("[gles] game maps buffers persistently; writes reach GL only on flush or unmap")
-                });
-            }
-            remember_mapping(Mapped { target, copy, offset, length, upload_on_unmap });
-            Ret::U32(copy)
-        }),
+        "glMapBufferRange" => handler!(|uc, a| map_buffer_range(a, "glMapBufferRange")),
+        "glMapBufferRangeEXT" => handler!(|uc, a| map_buffer_range(a, "glMapBufferRangeEXT")),
         "glFlushMappedBufferRange" => handler!(|uc, a| {
-            let (target, offset, length) = (a.u32(), a.u32(), a.u32());
-            let buffer = buffer_bound_to(target);
-            let found = with_group(|b| b.mapped.get(&buffer).map(|m| (m.copy, m.offset)));
-            if let Some((copy, start)) = found {
-                upload(target, start + offset, length, copy + offset);
+            flush_guest_mapping(a.u32(), a.u32(), a.u32());
+            Ret::Void
+        }),
+        "glFlushMappedBufferRangeEXT" => handler!(|uc, a| {
+            let (target, offset, length) = (a.u32(), a.i32(), a.i32());
+            if !flush_guest_mapping(target, offset as u32, length as u32) {
+                unsafe {
+                    host!("glFlushMappedBufferRangeEXT", fn(u32, isize, isize))(target, offset as isize, length as isize)
+                };
             }
             Ret::Void
         }),

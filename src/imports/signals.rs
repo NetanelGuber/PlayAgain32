@@ -3,12 +3,9 @@
 //! answer from its handler, and resumes them with another signal (SIGXCPU)
 //! that the paused handler waits for in sigsuspend.
 //!
-//! Host signals never reach guest code; only signals sent by guest code are
-//! delivered. Only one thread runs guest code at a time and switching happens
-//! inside phone functions, so a signalled thread is always parked in one. It
-//! runs the handler when it next holds the guest lock (after a wait, or before
-//! a phone function returns), like the kernel delivering on the way out of a
-//! system call. Waits re-check their conditions afterwards (SA_RESTART).
+//! Guest signals run at safe points or wake bridge waits. In parallel mode a
+//! helper can deliver a signal while the target is blocked in a host call or
+//! between guest calls. Waits re-check their conditions afterwards (SA_RESTART).
 //!
 //! Guest layouts (bionic ARM32): sigset_t is one word (bit n-1 = signal n);
 //! struct sigaction is { handler, mask, flags, restorer }.
@@ -118,7 +115,15 @@ fn send(target: u32, signal: u32) -> u32 {
     0
 }
 
-/// Signals for threads stuck in phone functions (parallel mode). A service
+/// Rechecks pending signals when an outer guest call returns. A request made
+/// by the sender may already have been checked while the target was still running.
+pub(crate) fn request_pending_on_idle(identity: &Identity) {
+    if identity.pending.load(Ordering::SeqCst) & !identity.blocked.load(Ordering::SeqCst) != 0 {
+        helpers::request(identity.handle);
+    }
+}
+
+/// Signals for threads in host code (parallel mode). A service
 /// thread checks 1 ms after a send: if the thread is still outside guest code
 /// with the signal undelivered, a helper host thread takes its place (same
 /// identity, slots and parked registers, its own engine) and runs the
@@ -132,11 +137,12 @@ mod helpers {
     use std::time::{Duration, Instant};
 
     use crate::imports::threads::{identity, Identity};
-    use crate::runtime::{self, Runner, OUTSIDE};
+    use crate::runtime::{self, Runner, BETWEEN_CALLS, OUTSIDE};
 
     struct Job {
         identity: Arc<Identity>,
         target: Arc<Runner>,
+        idle: bool,
     }
 
     /// Threads to look at again, with when.
@@ -192,12 +198,19 @@ mod helpers {
         identity.pending.load(Ordering::Acquire) & !identity.blocked.load(Ordering::Acquire) != 0
     }
 
-    /// Starts a helper for `handle` if it is still stuck outside guest code
-    /// with a deliverable signal.
+    fn parked(target: &Runner) -> Option<bool> {
+        match target.state.load(Ordering::SeqCst) {
+            BETWEEN_CALLS => Some(true),
+            OUTSIDE if target.parked_valid.load(Ordering::Relaxed) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Starts a helper for a parked thread with a deliverable signal.
     fn borrow(handle: u32) {
         let Some(identity) = identity(handle) else { return };
         let Some(target) = identity.runner.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
-        if !deliverable(&identity) || target.state.load(Ordering::SeqCst) != OUTSIDE {
+        if !deliverable(&identity) || parked(&target).is_none() {
             return;
         }
         let (number, sender) = take_helper();
@@ -206,15 +219,13 @@ mod helpers {
             return;
         }
         // Pairs with the thread's entry: it stores IN_GUEST, then loads borrower.
-        if target.state.load(Ordering::SeqCst) != OUTSIDE || !target.parked_valid.load(Ordering::Relaxed)
-            || identity.exiting.load(Ordering::SeqCst)
-        {
+        let Some(idle) = parked(&target).filter(|_| !identity.exiting.load(Ordering::SeqCst)) else {
             runtime::clear_borrower(&identity); // it delivers them itself
             IDLE.lock().unwrap_or_else(|e| e.into_inner()).push((number, sender));
             return;
-        }
+        };
         BORROWS.fetch_add(1, Ordering::Relaxed);
-        if let Err(failed) = sender.send(Job { identity, target }) {
+        if let Err(failed) = sender.send(Job { identity, target, idle }) {
             runtime::clear_borrower(&failed.0.identity);
         }
     }
@@ -236,8 +247,8 @@ mod helpers {
 
     fn helper(number: u32, jobs: Receiver<Job>, own: Sender<Job>) {
         runtime::become_helper(number);
-        for Job { identity, target } in jobs {
-            runtime::deliver_for(&identity, &target);
+        for Job { identity, target, idle } in jobs {
+            runtime::deliver_for(&identity, &target, idle);
             identity.helper_runner.lock().unwrap_or_else(|e| e.into_inner()).take();
             runtime::clear_borrower(&identity);
             // A signal that came after the last delivery check: the thread
